@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright 2026 The Sargassum Training Kit Authors -->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Drifter Field Console — Hover</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg-page:#06060a;
+    --bg-0:#0a0a0e;
+    --bg-1:#101015;
+    --bg-2:#16161a;
+    --bg-3:#1d1d22;
+    --bg-4:#23232a;
+    --hair-1:#202026;
+    --hair-2:#2a2a32;
+    --hair-3:#36363f;
+    --t-1:#ececef;
+    --t-2:#a4a4ac;
+    --t-3:#6e6e78;
+    --t-4:#494953;
+    --olive:#b8b06a;
+    --olive-dim:#7a7448;
+    --olive-text:#9a915a;
+    --sage:#7aa692;
+    --sage-dim:#4a6a5c;
+    --sage-text:#a4c0b0;
+    --wine:#8a3a3a;
+    --wine-bg:#311a1a;
+    --wine-bg2:#241414;
+    --wine-text:#caa6a6;
+    --wine-border:#3a2424;
+    --amber:#b3873d;
+    --amber-text:#caa37a;
+    --green:#5a8a6a;
+    --teal:#5a8a8a;
+
+    /* class colors: IN-MAT = olive, OPEN-WATER = teal-blue, OUT-OF-WATER = white (in air; kept clearly
+       distinct from the warm olive so the two never read alike) */
+    --in:#b8b06a;
+    --in-dim:#7a7448;
+    --out:#5a8a9c;
+    --out-dim:#3d6070;
+    --dry:#eef0f4;
+    --dry-dim:#9aa0ab;
+    --dry-text:#f4f5f8;
+
+    --text-2xs:9.5px;
+    --text-xs:10.5px;
+    --text-sm:11.5px;
+    --text-md:12.5px;
+    --text-base:13px;
+    --text-lg:14px;
+    --text-xl:16px;
+    --text-2xl:18px;
+    --text-3xl:22px;
+    --r-1:3px; --r-2:5px; --r-3:8px; --r-4:10px;
+  }
+
+  * { box-sizing:border-box; }
+  html, body {
+    margin:0; padding:0;
+    background:var(--bg-page); color:var(--t-1);
+    font-family:'Inter', system-ui, -apple-system, sans-serif;
+    font-size:var(--text-base); line-height:1.45;
+    -webkit-font-smoothing:antialiased;
+  }
+  .mono { font-family:'JetBrains Mono', ui-monospace, monospace; }
+  a { color:var(--olive); text-decoration:none; }
+  a:hover { color:var(--t-1); }
+  button { font-family:inherit; cursor:pointer; }
+  ::selection { background:rgba(184,176,106,0.28); }
+
+  #root { max-width:1200px; margin:0 auto; padding:0 20px 80px; }
+
+  /* ── Header ── */
+  .hdr {
+    display:flex; align-items:center; gap:14px;
+    padding:18px 2px 16px;
+    border-bottom:1px solid var(--hair-1);
+    position:sticky; top:0; z-index:20;
+    background:linear-gradient(180deg, var(--bg-page) 72%, rgba(6,6,10,0.86));
+    backdrop-filter:blur(6px);
+    flex-wrap:wrap;
+  }
+  .hov-mark { width:18px; height:18px; border:1.5px solid var(--olive); border-radius:50%; position:relative; flex:none; }
+  .hov-mark::after { content:""; position:absolute; inset:4px; background:var(--olive); border-radius:50%; }
+  .hdr__title { font-size:var(--text-lg); color:var(--t-1); font-weight:500; letter-spacing:0.01em; }
+  .hdr__title i { font-style:normal; color:var(--olive); }
+  .hdr__id { font-size:var(--text-xs); color:var(--t-3); }
+  .hdr__spacer { flex:1; }
+
+  /* ── Section chrome ── */
+  .zone { margin-top:26px; }
+  .zone__head { display:flex; align-items:baseline; gap:10px; margin-bottom:12px; }
+  .zone__idx {
+    font-family:'JetBrains Mono',monospace; font-size:var(--text-xs);
+    color:var(--olive-dim); border:1px solid var(--hair-2);
+    border-radius:var(--r-1); padding:2px 6px; line-height:1;
+  }
+  .zone__title { font-size:var(--text-xl); font-weight:600; color:var(--t-1); letter-spacing:-0.01em; }
+  .zone__sub { font-size:var(--text-sm); color:var(--t-3); }
+
+  .card {
+    background:var(--bg-2); border:1px solid var(--hair-2);
+    border-radius:var(--r-3); padding:16px 18px;
+  }
+  .eyebrow { font-size:var(--text-2xs); letter-spacing:0.16em; text-transform:uppercase; color:var(--t-4); font-weight:600; }
+
+  /* ── Pills / chips ── */
+  .pill {
+    display:inline-flex; align-items:center; gap:6px;
+    font-size:var(--text-xs); font-weight:500;
+    padding:3px 9px; border-radius:999px; line-height:1.4;
+    border:1px solid transparent; white-space:nowrap;
+  }
+  .pill .dot { width:6px; height:6px; border-radius:50%; flex:none; }
+  .pill.green { background:#132018; color:var(--sage); }
+  .pill.green .dot { background:var(--green); box-shadow:0 0 0 3px rgba(90,138,106,0.18); }
+  .pill.wine { background:var(--wine-bg2); color:var(--wine-text); border-color:var(--wine-border); }
+  .pill.wine .dot { background:var(--wine); }
+  .pill.neutral { background:var(--bg-3); color:var(--t-3); }
+  .pill.neutral .dot { background:var(--t-4); }
+
+  /* ── Buttons ── */
+  .btn {
+    display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    padding:9px 16px; border-radius:var(--r-2);
+    font-size:var(--text-base); font-weight:600; letter-spacing:0.01em;
+    border:1px solid var(--hair-2); background:var(--bg-3); color:var(--t-1);
+    transition:all .12s; white-space:nowrap;
+  }
+  .btn:hover { border-color:var(--hair-3); background:var(--bg-4); }
+  .btn--primary { background:var(--olive); color:#0a0a0e; border-color:var(--olive); }
+  .btn--primary:hover { background:#c6be78; border-color:#c6be78; }
+  .btn--ghost { background:transparent; color:var(--t-2); }
+  .btn--ghost:hover { color:var(--t-1); border-color:var(--hair-3); background:var(--bg-2); }
+  .btn--danger { background:transparent; color:var(--wine-text); border-color:var(--wine-border); }
+  .btn--danger:hover { background:var(--wine-bg2); border-color:var(--wine); color:var(--t-1); }
+  .btn:disabled, .btn[aria-disabled="true"] { opacity:0.4; pointer-events:none; }
+  .btn--lg { padding:13px 20px; font-size:var(--text-lg); }
+  .btn--sm { padding:5px 10px; font-size:var(--text-xs); }
+  .iconbtn {
+    width:26px; height:26px; border-radius:var(--r-1);
+    display:inline-flex; align-items:center; justify-content:center;
+    border:1px solid transparent; background:transparent; color:var(--t-4);
+    transition:all .12s;
+  }
+  .iconbtn:hover { color:var(--wine-text); border-color:var(--wine-border); background:var(--wine-bg2); }
+
+  /* animations */
+  @keyframes pulseDot { 0%,100%{opacity:1;} 50%{opacity:0.35;} }
+  @keyframes rowIn { from{ background:rgba(184,176,106,0.18); } to{ background:transparent; } }
+  @keyframes toastIn { from{ transform:translateY(14px); opacity:0; } to{ transform:translateY(0); opacity:1; } }
+  @media (prefers-reduced-motion:reduce){ *{ animation:none !important; } }
+
+  /* toast */
+  .toast-wrap { position:fixed; bottom:22px; left:50%; transform:translateX(-50%); z-index:60; display:flex; flex-direction:column; gap:8px; align-items:center; }
+  .toast {
+    display:flex; align-items:center; gap:10px;
+    background:var(--bg-2); border:1px solid var(--hair-3);
+    box-shadow:0 18px 40px rgba(0,0,0,0.6);
+    border-radius:var(--r-2); padding:10px 14px;
+    font-size:var(--text-md); color:var(--t-1);
+    animation:toastIn .22s ease;
+  }
+  .toast .dot { width:7px; height:7px; border-radius:50%; }
+
+  input[type=text], textarea { font-family:inherit; }
+  .grid-2 { display:grid; grid-template-columns:1.1fr 0.9fr; gap:16px; align-items:stretch; }
+  @media (max-width:820px){ .grid-2 { grid-template-columns:1fr; } }
+
+  /* model registry rows */
+  .model-row { display:grid; grid-template-columns:92px 130px 84px 1fr auto; gap:12px; align-items:center; }
+  @media (max-width:720px){ .model-row { grid-template-columns:1fr auto; row-gap:8px; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="toast-root"></div>
+
+<script>
+// The server bakes the real throwaway bearer into this page (app.py's dashboard() route replaces this
+// literal via json.dumps), so the naked URL "just works" -- no token in the URL, no manual entry. A URL
+// hash still overrides it if present. Disposable rig only: GET / is unauthenticated, so this exposes the
+// throwaway token to anyone who loads the page -- acceptable because there is no real data and the box is
+// torn down after the field test.
+const TOKEN = new URLSearchParams(location.hash.slice(1)).get("token") || "__SARG_TOKEN__";
+</script>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script src="/static/drifter/api.js"></script>
+<script type="text/babel" src="/static/drifter/components.jsx"></script>
+<script type="text/babel" src="/static/drifter/panels.jsx"></script>
+<script type="text/babel" src="/static/drifter/features.jsx"></script>
+<script type="text/babel" src="/static/drifter/registry.jsx"></script>
+<script type="text/babel" src="/static/drifter/app.jsx"></script>
+</body>
+</html>
