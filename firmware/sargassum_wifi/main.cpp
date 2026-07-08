@@ -23,6 +23,7 @@
 #include "HoverRgbArray.h"
 #include "hover_sarg_features.h"
 #include "hover_sarg_model.h"
+#include "sarg_camera.h"       // remote shutter: ArduCam Mega capture over the shared HSPI bus
 
 #ifndef WIFI_SSID
 #define WIFI_SSID "REPLACE_SSID"
@@ -98,6 +99,8 @@ static volatile sarg_model *g_active = nullptr;
 static uint8_t g_idle = 0;
 static int g_model_version = -1;   // ETag last pulled
 static uint32_t g_just_uploaded_until_ms = 0;   // WHITE slow-blink window; set on a real hot-swap (not a 304)
+static volatile bool g_capture_pending = false; // remote shutter: set when a /detections response asks for a shot
+static char g_capture_res[12] = {0};            // requested resolution name (e.g. "5MP")
 
 // N-consecutive smoother (mirrors cloud/sargassum/smoothing.py Smoother).
 static volatile int sm_state = 0;   // volatile: the LED timer reads it while loop() writes it (aligned int = atomic)
@@ -265,6 +268,29 @@ static void flushReadings() {
   if (code == 200) g_ring_count = 0;    // only clear on confirmed delivery (else keep buffering)
 }
 
+static bool timeValid();   // defined in the RTC/NTP section below
+
+// Remote shutter: capture a JPEG at `res` into PSRAM and POST it to /photos (or an error marker on failure).
+// Blocks the loop for the capture+upload (a few seconds) -- acceptable for a manual, on-demand shot.
+static void captureAndUpload(const char *res) {
+  static uint8_t *cbuf = nullptr;
+  if (!cbuf) cbuf = (uint8_t *)ps_malloc(3 * 1024 * 1024);   // 3MB PSRAM, allocated once (5MP JPEG <= ~2MB)
+  uint32_t ts = timeValid() ? (uint32_t)time(nullptr) : 0;
+  size_t n = cbuf ? cam_capture(cam_mode_from_name(res), cbuf, 3 * 1024 * 1024) : 0;
+  HTTPClient http;
+  http.begin(g_tls, SARG_URL "/photos");
+  http.setConnectTimeout(4000); http.setTimeout(15000);   // a 5MP JPEG needs a generous upload window
+  http.addHeader("Authorization", "Bearer " SARG_TOKEN);
+  http.addHeader("X-Drifter", SARG_DRIFTER);
+  http.addHeader("X-Ts", String(ts));
+  http.addHeader("X-Res", res);
+  int code;
+  if (n > 0) { http.addHeader("Content-Type", "image/jpeg"); code = http.POST(cbuf, n); }
+  else       { http.addHeader("X-Capture-Error", "1");        code = http.POST((uint8_t *)"", (size_t)0); }
+  http.end();
+  Serial.printf("[cam] upload res=%s len=%u code=%d\n", res, (unsigned)n, code);
+}
+
 // Post the latest smoothed detection (+ features + saturation) for the dashboard readout.
 static void postDetection(const Reading &r) {
   uint32_t t0 = millis();
@@ -283,6 +309,15 @@ static void postDetection(const Reading &r) {
   http.addHeader("Authorization", "Bearer " SARG_TOKEN);
   int code = http.POST(body);
   uint32_t t1 = millis();
+  // Remote-shutter command rides the response: {"capture":{"res":"<mode>"}}. Crude scan (no JSON lib).
+  if (code == 200) {
+    String resp = http.getString();
+    int ri = resp.indexOf("\"res\":\"");
+    if (ri >= 0) {
+      int s = ri + 7, e = resp.indexOf('"', s);
+      if (e > s) { resp.substring(s, e).toCharArray(g_capture_res, sizeof(g_capture_res)); g_capture_pending = true; }
+    }
+  }
   http.end();
   Serial.printf("[sarg] POST /detections took=%ums code=%d\n", t1 - t0, code);
 }
@@ -393,6 +428,8 @@ void setup() {
   g_led_ticker.attach_ms(20, ledTick);   // timer-driven WHITE LED (20ms tick -> renders the fast just-uploaded flicker)
   pmuInit();
   rtcInit();   // Wire1 is up (pmuInit began it); seed the clock from the RTC if it held time across the reboot
+  if (cam_begin()) Serial.println("[cam] ArduCam ready");
+  else Serial.println("[cam] ArduCam init FAILED (check HSPI wiring 36/37/35 + CS 38)");
   Wire.begin(PIN_SDA, PIN_SCL);
   bool ob = g_oled.begin(0x3D, true);   // SH1106 @ 0x3D on hardware Wire (shared with the RGB mux)
   Wire.begin(PIN_SDA, PIN_SCL);         // re-assert 17/18 (Adafruit begin() calls Wire.begin() no-args)
@@ -450,4 +487,5 @@ void loop() {
 
   if (now - last_post >= POST_MS) { last_post = now; flushReadings(); if (g_have_last) postDetection(g_last); }
   if (now - last_poll >= MODEL_POLL_MS) { last_poll = now; pollModel(); }
+  if (g_capture_pending) { g_capture_pending = false; captureAndUpload(g_capture_res); }   // remote shutter
 }
