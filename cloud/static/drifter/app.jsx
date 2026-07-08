@@ -107,6 +107,8 @@ function App() {
   const [saturated, setSaturated] = useState(false);
   const [battery, setBattery] = useState(null);       // {pct, mv} from the latest detection (null until reported)
   const [tab, setTab] = useState('console');          // 'console' (the training zones) | 'camera'
+  const [lastDataWall, setLastDataWall] = useState(null);   // server receipt time (s) of the freshest reading
+  const [nowMs, setNowMs] = useState(Date.now());           // ticks every 1s so "last data Xs ago" counts up
   const [showFeatures, setShowFeatures] = useState(false);   // hidden by default -- a cleaner console on
                                                               // landing; expand via the "Show live features" button
 
@@ -139,6 +141,9 @@ function App() {
     const tick = async () => {
       const [readings, dets] = await Promise.all([API.getReadings(drifter), API.getDetections(drifter)]);
       if (stop) return;
+      // freshest server-receipt time across readings + detections = when the drifter last sent data
+      const freshWall = readings.reduce((m, r) => Math.max(m, r.wall || 0), 0);
+      if (freshWall > 0) setLastDataWall(freshWall);
       if (readings.length) {
         // normalize the API shape ({ts, rgb, wall}) to what Timeline/LiveNow expect, plus the timestamp-
         // aligned model call (what the board's OWN verdict was at this reading's instant -- see
@@ -170,6 +175,11 @@ function App() {
     const iv = setInterval(tick, POLL_MS);
     return () => { stop = true; clearInterval(iv); };
   }, [drifter, activeLabel]);
+
+  useEffect(() => {   // 1s clock so the "last data" label counts up between polls (and while the board is silent)
+    const iv = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(iv);
+  }, []);
 
   useEffect(() => { refreshLabels(); refreshRegistry(); }, [refreshLabels, refreshRegistry]);
 
@@ -257,6 +267,7 @@ function App() {
         <span className="hdr__title">Hover<i>·</i>Drifter Field Console</span>
         <span className="hdr__id mono">{drifter}</span>
         <span className="hdr__spacer" />
+        <LastSeen wall={lastDataWall} nowMs={nowMs} />
         <BatteryPill battery={battery} />
         <nav style={{ display: 'flex', gap: 6, marginLeft: 14 }}>
           {[['console', 'Console'], ['camera', 'Camera']].map(([id, label]) => (

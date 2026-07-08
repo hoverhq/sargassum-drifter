@@ -373,4 +373,29 @@ function BatteryPill({ battery }) {
   );
 }
 
-Object.assign(window, { SARG, SensorSwatch, LiveNow, VerdictCard, LabelToggle, Timeline, BatteryPill });
+// "Last data" pill (header): how long since the drifter last sent data. `wall` is the server-receipt time
+// (seconds) of the freshest reading; `nowMs` is a 1s-ticking clock so it counts up live. Green < 30s (live),
+// amber < 2m (lagging), wine older (likely offline), grey until the first data arrives.
+function relAgo(secs) {
+  if (secs == null) return '—';
+  if (secs < 0) secs = 0;
+  if (secs < 60) return `${Math.round(secs)}s ago`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
+  return `${Math.round(secs / 86400)}d ago`;
+}
+function LastSeen({ wall, nowMs }) {
+  const secs = wall ? (nowMs / 1000 - wall) : null;
+  const color = secs == null ? 'var(--t-4)' : secs < 30 ? 'var(--green)' : secs < 120 ? 'var(--amber)' : 'var(--wine)';
+  return (
+    <span className="pill" title="time since the drifter last sent data" style={{ borderColor: 'var(--hair-2)' }}>
+      <span className="dot" style={{ background: color }} />
+      <span style={{ fontSize: 'var(--text-2xs)', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--t-4)' }}>
+        last data
+      </span>
+      <span className="mono">{wall ? relAgo(secs) : 'waiting'}</span>
+    </span>
+  );
+}
+
+Object.assign(window, { SARG, SensorSwatch, LiveNow, VerdictCard, LabelToggle, Timeline, BatteryPill, LastSeen });
