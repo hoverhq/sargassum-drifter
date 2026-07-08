@@ -16,6 +16,9 @@
 #include <XPowersLib.h>   // AXP2101 PMU — powers the peripheral/sensor rails on the T-Beam Supreme
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>   // on-board SH1106 128x64 OLED (hardware Wire, shared with the RGB mux — see below)
+#include <RTClib.h>            // PCF8563 battery-backed RTC on Wire1 — bridges the NTP sync gap across reboots
+#include <time.h>              // real-epoch time via SNTP (configTime) — a ts that never resets on reboot
+#include <Ticker.h>            // drives the WHITE LED off a timer so blocking WiFi POSTs can't stall its pattern
 
 #include "HoverRgbArray.h"
 #include "hover_sarg_features.h"
@@ -57,10 +60,13 @@
                                      // hardware GPIO once past boot -- IO45/46 are not restricted.
 #define WHITE_LEDC_FREQ_HZ   1000    // carrier frequency for the heartbeat fade (well above flicker-fusion)
 #define WHITE_LEDC_RES_BITS  8       // 0-255 duty range
-#define WHITE_FAST_MS        100    // no-network: ~5Hz (100ms on/100ms off = 200ms period)
-#define WHITE_SLOW_MS        500    // just-uploaded: ~1Hz (500ms on/500ms off)
-#define WHITE_JUST_UPLOADED_MS 10000 // how long the slow-blink window lasts after a NEW model loads
-#define WHITE_HEARTBEAT_MS   2500   // heartbeat fade period (one full dim->bright->dim cycle)
+#define WHITE_FAST_MS        1000   // no-network: 1s on / 1s off (2s period) -- fast blinks were too quick to
+                                    // read as distinct flashes; 1s is the floor between on and off
+#define WHITE_FLICKER_MS     60     // just-uploaded: rapid HDD-access-style flicker (60ms on / 60ms off)
+#define WHITE_JUST_UPLOADED_MS 10000 // the just-uploaded flicker runs for at least 10s after a NEW model loads
+// "model running" WHITE pattern: 3 quick flashes, 1s gap, then loop.
+#define WHITE_FLASH_ON_MS    120    // on-time of each flash (120 on / 120 off -> quick, punchy flashes)
+#define WHITE_PATTERN_MS     1720   // full cycle: 3-flash group (720) + 1000ms gap
 
 // T-Beam Supreme pins (verified): board I2C bus (RGB mux + OLED + BME) on 17/18; PMU/RTC on Wire1 42/41.
 #define PIN_SDA 17
@@ -68,6 +74,9 @@
 #define PIN_SDA1 42
 #define PIN_SCL1 41
 #define SMOOTH_N 5           // N-consecutive agree to change state (mirrors the cloud Smoother default)
+#define CONF_REEVAL 0.6f     // if confidence in the CURRENT reported class falls below this, drop the debounce
+                             // and take the fresh argmax immediately -- re-evaluate the moment the model stops
+                             // believing its own verdict (3-class random ~0.33)
 #define SAMPLE_MS 250        // ~4 Hz sampling
 #define POST_MS 1000         // burst-POST cadence (cosmetic only -- no science impact; lower = the
                              // dashboard shows a flipped verdict sooner after the on-board smoother
@@ -91,8 +100,13 @@ static int g_model_version = -1;   // ETag last pulled
 static uint32_t g_just_uploaded_until_ms = 0;   // WHITE slow-blink window; set on a real hot-swap (not a 304)
 
 // N-consecutive smoother (mirrors cloud/sargassum/smoothing.py Smoother).
-static int sm_state = 0, sm_cand = 0, sm_count = 0;
-static int smooth(int raw) {
+static volatile int sm_state = 0;   // volatile: the LED timer reads it while loop() writes it (aligned int = atomic)
+static int sm_cand = 0, sm_count = 0;
+static int smooth(int raw, float cur_conf) {
+  // Confidence-triggered re-eval: if the model's confidence in the class we're CURRENTLY reporting has
+  // fallen below CONF_REEVAL, don't hold it through the N-consecutive debounce -- adopt the fresh argmax
+  // immediately. While the model is still confident, the usual debounce avoids mat-edge flicker.
+  if (cur_conf < CONF_REEVAL) { sm_state = raw; sm_cand = raw; sm_count = 0; return sm_state; }
   if (raw == sm_state) { sm_count = 0; sm_cand = sm_state; }
   else if (raw == sm_cand) { if (++sm_count >= SMOOTH_N) { sm_state = raw; sm_count = 0; } }
   else { sm_cand = raw; sm_count = 1; }
@@ -136,18 +150,32 @@ static WiFiClientSecure g_tls;
 // APIs on one pin fights the hardware). fast blink (no net) > slow blink (model just loaded) > heartbeat
 // fade (normal). Network-up-but-no-model-yet still reads as heartbeat ("board alive, ready") rather than a
 // 4th distinct pattern -- a brief, self-resolving startup window doesn't warrant its own alarm state.
+static Ticker g_led_ticker;               // drives updateWhiteLed off a timer, independent of the blocking loop
+static volatile bool g_wifi_up = false;   // cached in loop() so the LED timer never calls WiFi.status()
+
 static void updateWhiteLed(uint32_t now) {
   uint32_t duty;
-  if (WiFi.status() != WL_CONNECTED) {
+  if (!g_wifi_up) {
     duty = (now % (2 * WHITE_FAST_MS) < WHITE_FAST_MS) ? 255 : 0;                 // fast blink: no network
   } else if (now < g_just_uploaded_until_ms) {
-    duty = (now % (2 * WHITE_SLOW_MS) < WHITE_SLOW_MS) ? 255 : 0;                 // slow blink: just uploaded
+    duty = (now % (2 * WHITE_FLICKER_MS) < WHITE_FLICKER_MS) ? 255 : 0;           // rapid HDD-style flicker: just uploaded
   } else {
-    float phase = (float)(now % WHITE_HEARTBEAT_MS) / (float)WHITE_HEARTBEAT_MS;  // 0..1 triangle fade
-    float tri = phase < 0.5f ? (phase * 2.0f) : (2.0f - phase * 2.0f);
-    duty = (uint32_t)(tri * 255.0f);
+    // model running: 3 quick flashes, 1s gap, loop (hard on/off, not a fade).
+    static const uint32_t on_start[3] = {0, 240, 480};   // start of each of the 3 flashes (240ms apart)
+    uint32_t p = now % WHITE_PATTERN_MS;
+    bool on = false;
+    for (int i = 0; i < 3; i++) if (p >= on_start[i] && p < on_start[i] + WHITE_FLASH_ON_MS) { on = true; break; }
+    duty = on ? 255 : 0;
   }
   ledcWrite(WHITE_LEDC_CHANNEL, duty);
+}
+
+// Fire both status LEDs off a ~20ms timer so the blocking WiFi POSTs in loop() can never stall them.
+// BLUE = the smoothed IN-MAT verdict only (state 1) -- reads the same whether the model is 2- or 3-class,
+// off for open-water AND out-of-water. (The full 3-state BLUE rides the LEDC rework once binary is confirmed.)
+static void ledTick() {
+  updateWhiteLed(millis());
+  digitalWrite(PIN_LED_BLUE, (g_active && sm_state == 1) ? HIGH : LOW);
 }
 
 static void oledStatus(const char *wifiNote) {
@@ -226,6 +254,7 @@ static void flushReadings() {
   uint32_t t_build = millis();
   HTTPClient http;
   http.begin(g_tls, SARG_URL "/readings");
+  http.setConnectTimeout(3000); http.setTimeout(4000);   // bound the loop stall on slow WiFi; readings buffer + retry
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Authorization", "Bearer " SARG_TOKEN);
   int code = http.POST(batch);
@@ -246,6 +275,7 @@ static void postDetection(const Reading &r) {
   body += "]}";
   HTTPClient http;
   http.begin(g_tls, SARG_URL "/detections");
+  http.setConnectTimeout(3000); http.setTimeout(4000);   // bound the loop stall on slow WiFi
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Authorization", "Bearer " SARG_TOKEN);
   int code = http.POST(body);
@@ -259,6 +289,7 @@ static void postDetection(const Reading &r) {
 static void pollModel() {
   HTTPClient http;
   http.begin(g_tls, SARG_URL "/model?drifter=" SARG_DRIFTER);
+  http.setConnectTimeout(3000); http.setTimeout(5000);   // model GET gets a little read headroom; still bounded
   http.addHeader("Authorization", "Bearer " SARG_TOKEN);
   if (g_model_version >= 0) http.addHeader("If-None-Match", String(g_model_version));
   const char *hdrs[] = {"ETag"};
@@ -297,6 +328,52 @@ static void pmuInit() {
   }
 }
 
+// ── Real-epoch time. Retires the old seconds-since-boot ts, which RESET on every reboot and made the
+// reading buffer + label spans straddle reboots. Source: SNTP over WiFi (the board is always connected).
+// The PCF8563 RTC (battery-backed, on Wire1 with the PMU) holds NTP-set time across a reboot so ts is valid
+// IMMEDIATELY on the next boot instead of waiting ~10s for NTP; the first-ever boot (RTC unset) waits once. ──
+#define TIME_SANE_EPOCH 1735689600UL   // 2025-01-01 UTC: any epoch below this = clock not set yet
+static RTC_PCF8563 g_rtc;
+static bool g_rtc_ok = false, g_ntp_started = false, g_rtc_synced = false;
+
+static bool timeValid() { return (uint32_t)time(nullptr) >= TIME_SANE_EPOCH; }
+
+static void rtcInit() {
+  g_rtc_ok = g_rtc.begin(&Wire1);   // PCF8563 shares Wire1 (42/41) with the PMU
+  if (g_rtc_ok) {
+    uint32_t e = g_rtc.now().unixtime();
+    if (e >= TIME_SANE_EPOCH) {     // RTC held a real time -> seed the system clock so ts is valid at once
+      struct timeval tv = { (time_t)e, 0 };
+      settimeofday(&tv, nullptr);
+      Serial.printf("[sarg] RTC seeded clock: epoch %u\n", e);
+    } else {
+      Serial.println("[sarg] RTC present but unset -- waiting for NTP");
+    }
+  } else {
+    Serial.println("[sarg] RTC not found -- waiting for NTP");
+  }
+}
+
+static void startNtp() {
+  if (g_ntp_started) return;
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");   // UTC epoch; SNTP keeps syncing in the background
+  g_ntp_started = true;
+  Serial.println("[sarg] NTP started");
+}
+
+// Once NTP has landed, persist it to the RTC so the NEXT reboot has real time immediately.
+static void ntpMaintain() {
+  if (!g_rtc_synced && timeValid()) {
+    g_rtc_synced = true;
+    if (g_rtc_ok) {
+      time_t e = time(nullptr);
+      struct tm *g = gmtime(&e);   // RTClib's DateTime(uint32_t) is Y2K-epoch; build from fields to avoid it
+      g_rtc.adjust(DateTime(g->tm_year + 1900, g->tm_mon + 1, g->tm_mday, g->tm_hour, g->tm_min, g->tm_sec));
+      Serial.println("[sarg] RTC set from NTP");
+    }
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(1500);
@@ -310,7 +387,9 @@ void setup() {
   ledcSetup(WHITE_LEDC_CHANNEL, WHITE_LEDC_FREQ_HZ, WHITE_LEDC_RES_BITS);
   ledcAttachPin(PIN_LED_WHITE, WHITE_LEDC_CHANNEL);
   ledcWrite(WHITE_LEDC_CHANNEL, 0);   // still off
+  g_led_ticker.attach_ms(20, ledTick);   // timer-driven WHITE LED (20ms tick -> renders the fast just-uploaded flicker)
   pmuInit();
+  rtcInit();   // Wire1 is up (pmuInit began it); seed the clock from the RTC if it held time across the reboot
   Wire.begin(PIN_SDA, PIN_SCL);
   bool ob = g_oled.begin(0x3D, true);   // SH1106 @ 0x3D on hardware Wire (shared with the RGB mux)
   Wire.begin(PIN_SDA, PIN_SCL);         // re-assert 17/18 (Adafruit begin() calls Wire.begin() no-args)
@@ -325,7 +404,7 @@ void setup() {
   else Serial.println("[sarg] RGB array not found");
   Serial.printf("[sarg] joining WiFi '%s'\n", WIFI_SSID);
   oledStatus("joining");
-  if (wifiConnect(20000)) { Serial.printf("[sarg] WiFi ip=%s\n", WiFi.localIP().toString().c_str()); pollModel(); }
+  if (wifiConnect(20000)) { Serial.printf("[sarg] WiFi ip=%s\n", WiFi.localIP().toString().c_str()); startNtp(); pollModel(); }
   oledStatus(nullptr);
 }
 
@@ -333,12 +412,15 @@ void loop() {
   static uint32_t last_sample = 0, last_post = 0, last_poll = 0, last_oled = 0;
   uint32_t now = millis();
 
-  updateWhiteLed(now);   // status: fast blink (no net) > slow blink (model just loaded) > heartbeat
+  g_wifi_up = (WiFi.status() == WL_CONNECTED);   // cache for the LED timer (must not call WiFi.status() itself)
+  ntpMaintain();         // persist NTP->RTC once the real clock lands
 
-  if (now - last_sample >= SAMPLE_MS) {
+  // Sample only once the clock is REAL (RTC-seeded or NTP-synced) so every reading carries an epoch ts that
+  // never resets on reboot. First-ever boot waits ~10s for NTP; later reboots are instant (RTC held time).
+  if (timeValid() && now - last_sample >= SAMPLE_MS) {
     last_sample = now;
     if (g_rgb.presentCount() < HoverRgbArray::N) g_rgb.reprobe();   // battery-settle / hot-plug recovery
-    Reading r; r.ts = now / 1000; r.mask = g_rgb.presentMask();
+    Reading r; r.ts = (uint32_t)time(nullptr); r.mask = g_rgb.presentMask();   // real epoch, monotonic across reboots
     for (uint8_t c = 0; c < HoverRgbArray::N; c++) {
       uint16_t rr = 0, gg = 0, bb = 0; g_rgb.read(c, rr, gg, bb);
       r.rgb[c][0] = rr; r.rgb[c][1] = gg; r.rgb[c][2] = bb;
@@ -351,20 +433,17 @@ void loop() {
       sarg_model_proba(m, r.feat, pc);               // per-class probabilities (open-water/in-mat/out-of-water)
       int raw = 0;                                   // argmax over the present classes (ties -> lowest index)
       for (uint16_t c = 1; c < m->n_classes; c++) if (pc[c] > pc[raw]) raw = (int)c;
-      r.state = smooth(raw);                          // smoother is class-agnostic; sm_state now 0..n_classes-1
+      r.state = smooth(raw, pc[sm_state]);            // pass current-class confidence -> confidence-reeval
       r.proba = pc[r.state];                          // confidence of the REPORTED (smoothed) class
     }
     ring_push(r);
     g_last = r; g_have_last = true;
-    // BLUE = the smoothed IN-MAT verdict only (state 1), so it reads the same whether the model is 2- or
-    // 3-class. Off for open-water AND out-of-water. The full 3-state BLUE (solid in-mat / pulse out-of-water
-    // / off open-water) rides the LEDC rework once the binary LED is bench-confirmed.
-    digitalWrite(PIN_LED_BLUE, (g_active && sm_state == 1) ? HIGH : LOW);
+    // BLUE verdict LED is driven by the LED timer (ledTick), not here -- so a blocking POST can't freeze it.
   }
 
   if (now - last_oled >= 500) { last_oled = now; oledStatus(nullptr); }  // operator's live status channel
 
-  if (WiFi.status() != WL_CONNECTED) { wifiConnect(8000); return; }  // buffer while down; reconnect
+  if (WiFi.status() != WL_CONNECTED) { if (wifiConnect(8000)) startNtp(); return; }  // buffer while down; reconnect
 
   if (now - last_post >= POST_MS) { last_post = now; flushReadings(); if (g_have_last) postDetection(g_last); }
   if (now - last_poll >= MODEL_POLL_MS) { last_poll = now; pollModel(); }
