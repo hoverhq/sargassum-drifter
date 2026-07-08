@@ -36,12 +36,32 @@ static CAM_IMAGE_MODE cam_mode_from_name(const char *r) {
 
 // Bring up the shared HSPI bus on the camera pins BEFORE the lib's begin() (so begin() doesn't grab the
 // wrong pins), then init the sensor. Returns true if the Arducam reports a live sensor.
+// Raw sensor-ID probe (replicates the lib's cameraBusRead: CS low, send reg, two dummy reads, CS high).
+// The lib's begin() spins FOREVER (cameraWaitI2cIdle has no timeout) if the sensor doesn't respond, which
+// wedges the whole board -- so we must confirm a live sensor BEFORE calling begin(). 0x00/0xFF = no camera.
+static bool cam_probe() {
+  SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+  digitalWrite(CAM_CS, LOW);
+  SPI.transfer(0x40 & 0x7F);   // CAM_REG_SENSOR_ID, read
+  SPI.transfer(0x00);
+  uint8_t id = SPI.transfer(0x00);
+  digitalWrite(CAM_CS, HIGH);
+  SPI.endTransaction();
+  return (id != 0x00 && id != 0xFF);
+}
+
 static bool cam_begin() {
+  // The ArduCam lib drives the GLOBAL SPI bus and ESP32's begin() guard blocks a re-init on custom pins, so
+  // if the framework already began SPI on its default pins, the lib's begin() can hang. end() first, then
+  // begin() on OUR pins, forces the bus onto 36/37/35 before the lib touches it.
+  SPI.end();
   SPI.begin(CAM_SCK, CAM_MISO, CAM_MOSI);
   pinMode(CAM_CS, OUTPUT);
   digitalWrite(CAM_CS, HIGH);
+  g_cam_ok = false;
+  if (!cam_probe()) return false;             // no live sensor -> DON'T call the (no-timeout, wedging) begin()
   g_cam_ok = (g_cam.begin() == CAM_ERR_SUCCESS);
-  if (g_cam_ok) g_cam.setAutoFocus(0x00);   // one autofocus pass
+  if (g_cam_ok) g_cam.setAutoFocus(0x00);     // one autofocus pass
   return g_cam_ok;
 }
 

@@ -429,7 +429,7 @@ void setup() {
   pmuInit();
   rtcInit();   // Wire1 is up (pmuInit began it); seed the clock from the RTC if it held time across the reboot
   if (cam_begin()) Serial.println("[cam] ArduCam ready");
-  else Serial.println("[cam] ArduCam init FAILED (check HSPI wiring 36/37/35 + CS 38)");
+  else Serial.println("[cam] ArduCam absent/unresponsive -- captures will fail-graceful (no board wedge)");
   Wire.begin(PIN_SDA, PIN_SCL);
   bool ob = g_oled.begin(0x3D, true);   // SH1106 @ 0x3D on hardware Wire (shared with the RGB mux)
   Wire.begin(PIN_SDA, PIN_SCL);         // re-assert 17/18 (Adafruit begin() calls Wire.begin() no-args)
