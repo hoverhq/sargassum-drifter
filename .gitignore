@@ -21,3 +21,6 @@ _sarg_cffi.o
 
 # macOS
 .DS_Store
+
+# runtime camera uploads (never tracked)
+photos/

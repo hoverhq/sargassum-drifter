@@ -8,15 +8,20 @@ Endpoints: POST /readings (single or batch) · POST /labels · POST /train (in-t
 GET /model (ETag=version, 304 poll-if-newer) · POST /detections · GET / (dashboard) · GET /api/*.
 Run: SARG_TOKEN=... uvicorn app:app --host 0.0.0.0 --port 8000
 """
+import io
 import json
 import os
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image
 
 import train as trainmod
 from store import Store
+
+PHOTO_DIR = os.environ.get(
+    "SARG_PHOTO_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "photos"))
 
 TOKEN = os.environ.get("SARG_TOKEN")
 if not TOKEN:  # fail loud: no shipped default, so a public build can never run with a usable token
@@ -135,7 +140,8 @@ async def post_detections(req: Request, authorization: str = Header(None)):
     store.add_detection(b["drifter"], float(b["ts"]), int(b["state"]), b.get("proba"),
                         b.get("features", []), b.get("saturated", False),
                         b.get("battery"), b.get("battery_mv"))
-    return {"ok": True}
+    res = store.pop_pending_capture(b["drifter"])   # one-shot remote-shutter command rides the response
+    return {"ok": True, "capture": ({"res": res} if res else None)}
 
 
 @app.get("/api/readings")
@@ -148,6 +154,68 @@ def api_readings(drifter: str, authorization: str = Header(None)):
 def api_detections(drifter: str, authorization: str = Header(None)):
     _auth(authorization)
     return JSONResponse(store.recent_detections(drifter))
+
+
+# ── remote shutter ──────────────────────────────────────────────────────────
+@app.post("/capture-request")
+async def post_capture_request(drifter: str, req: Request, authorization: str = Header(None)):
+    _auth(authorization)
+    b = await req.json()
+    store.set_pending_capture(drifter, str(b.get("res", "5MP")))
+    return {"ok": True}
+
+
+@app.post("/photos")
+async def post_photo(req: Request, authorization: str = Header(None)):
+    _auth(authorization)
+    drifter = req.headers.get("X-Drifter", "drifter1")
+    ts = float(req.headers.get("X-Ts", "0") or 0)
+    res = req.headers.get("X-Res", "")
+    if req.headers.get("X-Capture-Error"):
+        store.add_photo(drifter, ts, res, 0, 0, 0, False, None, None)
+        return {"ok": True, "captured": False}
+    data = await req.body()
+    d = os.path.join(PHOTO_DIR, drifter)
+    os.makedirs(d, exist_ok=True)
+    stem = str(int(ts)) if ts else str(len(data))
+    path = os.path.join(d, stem + ".jpg")
+    thumb_path = os.path.join(d, stem + ".thumb.jpg")
+    with open(path, "wb") as f:
+        f.write(data)
+    width = height = 0
+    try:
+        im = Image.open(io.BytesIO(data))
+        width, height = im.size
+        im.thumbnail((240, 240))
+        im.convert("RGB").save(thumb_path, "JPEG", quality=70)
+    except Exception:
+        thumb_path = path  # unreadable image: serve the original as its own thumb
+    store.add_photo(drifter, ts, res, width, height, len(data), True, path, thumb_path)
+    return {"ok": True, "captured": True, "bytes": len(data)}
+
+
+@app.get("/api/photos")
+def api_photos(drifter: str, authorization: str = Header(None)):
+    _auth(authorization)
+    return JSONResponse(store.list_photos(drifter))
+
+
+# Image GET routes are UNAUTHENTICATED on purpose: a browser <img> can't send an Authorization header, and
+# the disposable rig already serves GET / unauthenticated (no real data). Keeps the film-strip simple.
+@app.get("/photos/{pid}/thumb")
+def photo_thumb(pid: int):
+    p = store.get_photo(pid)
+    if not p or not p["thumb_path"]:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return FileResponse(p["thumb_path"], media_type="image/jpeg")
+
+
+@app.get("/photos/{pid}/full")
+def photo_full(pid: int):
+    p = store.get_photo(pid)
+    if not p or not p["path"]:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return FileResponse(p["path"], media_type="image/jpeg")
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -32,6 +32,13 @@ CREATE TABLE IF NOT EXISTS models (
   blob BLOB NOT NULL, meta TEXT, note TEXT DEFAULT '', created REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS live_model (
   drifter TEXT PRIMARY KEY, version INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS pending_capture (
+  drifter TEXT PRIMARY KEY, res TEXT NOT NULL, created REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS photos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, drifter TEXT NOT NULL, ts REAL NOT NULL,
+  res TEXT, width INTEGER, height INTEGER, bytes INTEGER, ok INTEGER NOT NULL,
+  path TEXT, thumb_path TEXT, created REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_photos ON photos(drifter, id);
 """
 
 
@@ -84,6 +91,45 @@ class Store:
                  (int(battery) if battery is not None else None),
                  (int(battery_mv) if battery_mv is not None else None), time.time()))
             self.db.commit()
+
+    # ── remote-shutter: a one-shot capture command per drifter, popped by the board's next detection POST ──
+    def set_pending_capture(self, drifter, res):
+        with self._lock:
+            self.db.execute("INSERT INTO pending_capture(drifter,res,created) VALUES(?,?,?) "
+                            "ON CONFLICT(drifter) DO UPDATE SET res=excluded.res, created=excluded.created",
+                            (drifter, res, time.time()))
+            self.db.commit()
+
+    def pop_pending_capture(self, drifter):
+        with self._lock:
+            row = self.db.execute("SELECT res FROM pending_capture WHERE drifter=?", (drifter,)).fetchone()
+            if row:
+                self.db.execute("DELETE FROM pending_capture WHERE drifter=?", (drifter,))
+                self.db.commit()
+            return row[0] if row else None
+
+    # ── remote-shutter: uploaded photos (JPEG on disk + a Pillow thumbnail) ──
+    def add_photo(self, drifter, ts, res, width, height, nbytes, ok, path, thumb_path):
+        with self._lock:
+            cur = self.db.execute(
+                "INSERT INTO photos(drifter,ts,res,width,height,bytes,ok,path,thumb_path,created) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (drifter, ts, res, width, height, nbytes, int(bool(ok)), path, thumb_path, time.time()))
+            self.db.commit()
+            return cur.lastrowid
+
+    def list_photos(self, drifter, limit=200):
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT id,ts,res,width,height,bytes,ok FROM photos WHERE drifter=? ORDER BY id DESC LIMIT ?",
+                (drifter, limit)).fetchall()
+        return [{"id": i, "ts": ts, "res": r, "width": w, "height": h, "bytes": b, "ok": bool(ok)}
+                for i, ts, r, w, h, b, ok in rows]
+
+    def get_photo(self, pid):
+        with self._lock:
+            row = self.db.execute("SELECT path,thumb_path FROM photos WHERE id=?", (pid,)).fetchone()
+        return {"path": row[0], "thumb_path": row[1]} if row else None
 
     def labeled_readings(self, drifter):
         """Time-ordered [(rgb 4x3, label|None)]: each reading gets the label of the span it falls in."""

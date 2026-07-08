@@ -4,10 +4,12 @@
 TestClient — ingest readings + labels, one-click train yields a servable model, ETag poll-if-newer, ingest
 detections, dashboard data. Uses synthetic streams so the loop is exercised end to end without the board.
 """
+import io
 import os
 import tempfile
 
 os.environ["SARG_DB"] = tempfile.mktemp(suffix=".db")
+os.environ["SARG_PHOTO_DIR"] = tempfile.mkdtemp(prefix="sargphotos-")
 os.environ["SARG_TOKEN"] = "testtok"
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -82,6 +84,54 @@ def test_detection_battery_telemetry():
     dets = client.get("/api/detections?drifter=" + d, headers=H).json()  # oldest-first
     assert dets[0]["battery"] == 87 and dets[0]["battery_mv"] == 4021
     assert dets[1]["battery"] is None and dets[1]["battery_mv"] is None
+
+
+def test_capture_command_is_one_shot():
+    d = "camcmd"
+    # no command pending -> detection response carries no capture
+    r = client.post("/detections", json={"drifter": d, "ts": 1.0, "state": 0, "proba": 0.5,
+                                         "features": [0.0] * 16, "saturated": False}, headers=H)
+    assert r.json().get("capture") in (None, False)
+    # arm a capture at 5MP
+    assert client.post("/capture-request?drifter=" + d, json={"res": "5MP"}, headers=H).status_code == 200
+    # the next detection POST carries the command exactly once, then it clears
+    r = client.post("/detections", json={"drifter": d, "ts": 2.0, "state": 0, "proba": 0.5,
+                                         "features": [0.0] * 16, "saturated": False}, headers=H)
+    assert r.json()["capture"] == {"res": "5MP"}
+    r = client.post("/detections", json={"drifter": d, "ts": 3.0, "state": 0, "proba": 0.5,
+                                         "features": [0.0] * 16, "saturated": False}, headers=H)
+    assert r.json().get("capture") in (None, False)
+
+
+def _tiny_jpeg():
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 48), (10, 120, 30)).save(buf, "JPEG")
+    return buf.getvalue()
+
+
+def test_photo_upload_thumbnail_and_serve():
+    d = "camphoto"
+    jpg = _tiny_jpeg()
+    r = client.post("/photos", content=jpg, headers={**H, "Content-Type": "image/jpeg",
+                    "X-Drifter": d, "X-Ts": "100.0", "X-Res": "VGA"})
+    assert r.status_code == 200, r.text
+    lst = client.get("/api/photos?drifter=" + d, headers=H).json()
+    assert len(lst) == 1 and lst[0]["ok"] and lst[0]["res"] == "VGA" and lst[0]["bytes"] == len(jpg)
+    pid = lst[0]["id"]
+    full = client.get(f"/photos/{pid}/full")          # image routes are unauthenticated (for <img> tags)
+    assert full.status_code == 200 and full.content[:2] == b"\xff\xd8"    # JPEG SOI
+    thumb = client.get(f"/photos/{pid}/thumb")
+    assert thumb.status_code == 200 and thumb.content[:2] == b"\xff\xd8"
+
+
+def test_capture_error_marks_failed_row():
+    d = "camerr"
+    r = client.post("/photos", content=b"", headers={**H, "X-Drifter": d, "X-Ts": "5.0",
+                    "X-Res": "5MP", "X-Capture-Error": "1"})
+    assert r.status_code == 200 and r.json()["captured"] is False
+    lst = client.get("/api/photos?drifter=" + d, headers=H).json()
+    assert len(lst) == 1 and lst[0]["ok"] is False
 
 
 def test_push_unknown_version_404():

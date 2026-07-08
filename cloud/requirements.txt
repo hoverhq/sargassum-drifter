@@ -7,4 +7,5 @@ cffi
 setuptools   # cffi's out-of-line .compile() imports setuptools; Python >= 3.12 venvs no longer bundle it
 httpx        # TestClient
 pytest
+Pillow       # server-side thumbnails for the camera film-strip
 # emlearn is NOT required (we extract the RF straight from sklearn; see model_serialize.py)
