@@ -354,4 +354,23 @@ function Timeline({ buffer, sel, onSelChange, onLabel }) {
   );
 }
 
-Object.assign(window, { SARG, SensorSwatch, LiveNow, VerdictCard, LabelToggle, Timeline });
+// Battery telemetry pill (header). `pct` is the board's AXP2101 fuel-gauge percent (null/-1 = no reading
+// yet, e.g. before the board reports); `mv` is the raw pack voltage. Colored by charge, and falls back to
+// voltage, then a dash, when the percent is unavailable so it degrades gracefully pre-firmware-update.
+function BatteryPill({ battery }) {
+  const pct = battery && battery.pct != null && battery.pct >= 0 ? battery.pct : null;
+  const mv = battery && battery.mv != null && battery.mv > 0 ? battery.mv : null;
+  const color = pct == null ? 'var(--t-4)' : pct > 50 ? 'var(--green)' : pct > 20 ? 'var(--amber)' : 'var(--wine)';
+  const label = pct != null ? `${pct}%` : (mv ? `${(mv / 1000).toFixed(2)}V` : '—');
+  const title = pct != null
+    ? `battery ${pct}%${mv ? ` · ${(mv / 1000).toFixed(2)} V` : ''}`
+    : (mv ? `battery ${(mv / 1000).toFixed(2)} V (fuel-gauge % unavailable)` : 'battery: no telemetry yet');
+  return (
+    <span className="pill" title={title} style={{ borderColor: 'var(--hair-2)' }}>
+      <span className="dot" style={{ background: color }} />
+      <span className="mono">{label}</span>
+    </span>
+  );
+}
+
+Object.assign(window, { SARG, SensorSwatch, LiveNow, VerdictCard, LabelToggle, Timeline, BatteryPill });

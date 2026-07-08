@@ -272,7 +272,10 @@ static void postDetection(const Reading &r) {
   body += r.ts; body += ",\"state\":"; body += r.state; body += ",\"proba\":"; body += String(r.proba, 3);
   body += ",\"saturated\":"; body += (r.sat ? "true" : "false"); body += ",\"features\":[";
   for (int i = 0; i < SARG_N_FEATURES; i++) { body += (i ? "," : ""); body += String(r.feat[i], 5); }
-  body += "]}";
+  // Battery telemetry for the console: percent (AXP2101 fuel gauge; -1 if unavailable) + raw mV.
+  body += "],\"battery\":"; body += (int)pmu.getBatteryPercent();
+  body += ",\"battery_mv\":"; body += (int)pmu.getBattVoltage();
+  body += "}";
   HTTPClient http;
   http.begin(g_tls, SARG_URL "/detections");
   http.setConnectTimeout(3000); http.setTimeout(4000);   // bound the loop stall on slow WiFi

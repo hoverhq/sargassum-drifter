@@ -105,6 +105,7 @@ function App() {
   const [verdict, setVerdict] = useState(null);
   const [liveFeatures, setLiveFeatures] = useState(null);
   const [saturated, setSaturated] = useState(false);
+  const [battery, setBattery] = useState(null);       // {pct, mv} from the latest detection (null until reported)
   const [showFeatures, setShowFeatures] = useState(false);   // hidden by default -- a cleaner console on
                                                               // landing; expand via the "Show live features" button
 
@@ -161,6 +162,7 @@ function App() {
         setVerdict({ label: c ? c.key : null, conf: d.proba != null ? d.proba : null });
         setLiveFeatures(d.features || null);
         setSaturated(!!d.saturated);
+        setBattery({ pct: d.battery, mv: d.battery_mv });
       }
     };
     tick();
@@ -254,6 +256,7 @@ function App() {
         <span className="hdr__title">Hover<i>·</i>Drifter Field Console</span>
         <span className="hdr__id mono">{drifter}</span>
         <span className="hdr__spacer" />
+        <BatteryPill battery={battery} />
       </header>
 
       {/* ZONE 1 — live now */}

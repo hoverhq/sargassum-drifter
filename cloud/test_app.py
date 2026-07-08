@@ -70,6 +70,20 @@ def test_full_loop_train_push_serve_detect():
     assert client.get("/").status_code == 200  # dashboard UI serves (no data without the token)
 
 
+def test_detection_battery_telemetry():
+    d = "batt"
+    # a detection carrying the board's battery telemetry round-trips through /detections -> /api/detections
+    client.post("/detections", json={"drifter": d, "ts": 10.0, "state": 2, "proba": 0.9,
+                                     "features": [0.0] * 16, "saturated": False,
+                                     "battery": 87, "battery_mv": 4021}, headers=H)
+    # a detection from an OLD board (no battery field) still ingests -> null battery (graceful pre-update)
+    client.post("/detections", json={"drifter": d, "ts": 11.0, "state": 1, "proba": 0.5,
+                                     "features": [0.0] * 16, "saturated": False}, headers=H)
+    dets = client.get("/api/detections?drifter=" + d, headers=H).json()  # oldest-first
+    assert dets[0]["battery"] == 87 and dets[0]["battery_mv"] == 4021
+    assert dets[1]["battery"] is None and dets[1]["battery_mv"] is None
+
+
 def test_push_unknown_version_404():
     d = "loop"
     assert client.post(f"/push?drifter={d}&version=999", headers=H).status_code == 404

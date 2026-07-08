@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS labels (
   t_start REAL NOT NULL, t_end REAL NOT NULL, label INTEGER NOT NULL, created REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS detections (
   id INTEGER PRIMARY KEY AUTOINCREMENT, drifter TEXT NOT NULL, ts REAL NOT NULL,
-  state INTEGER NOT NULL, proba REAL, features TEXT, saturated INTEGER, created REAL NOT NULL);
+  state INTEGER NOT NULL, proba REAL, features TEXT, saturated INTEGER,
+  battery INTEGER, battery_mv INTEGER, created REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_detections ON detections(drifter, ts);
 CREATE TABLE IF NOT EXISTS models (
   version INTEGER PRIMARY KEY AUTOINCREMENT, drifter TEXT NOT NULL,
@@ -45,6 +46,11 @@ class Store:
             self.db.execute("ALTER TABLE models ADD COLUMN note TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass  # column already present
+        for _col in ("battery", "battery_mv"):  # migration: battery telemetry on a pre-battery detections table
+            try:
+                self.db.execute(f"ALTER TABLE detections ADD COLUMN {_col} INTEGER")
+            except sqlite3.OperationalError:
+                pass  # column already present
         # One-time backfill: a pre-registry DB always served the HIGHEST version as the live model (no
         # explicit push step existed). Grandfather that in as the live pointer so a board that already
         # pulled + is running that model in RAM doesn't 404 on its next poll after this migration -- from
@@ -69,11 +75,14 @@ class Store:
                             (drifter, t_start, t_end, int(label), time.time()))
             self.db.commit()
 
-    def add_detection(self, drifter, ts, state, proba, features, saturated):
+    def add_detection(self, drifter, ts, state, proba, features, saturated, battery=None, battery_mv=None):
         with self._lock:
             self.db.execute(
-                "INSERT INTO detections(drifter,ts,state,proba,features,saturated,created) VALUES(?,?,?,?,?,?,?)",
-                (drifter, ts, int(state), proba, json.dumps(features), int(bool(saturated)), time.time()))
+                "INSERT INTO detections(drifter,ts,state,proba,features,saturated,battery,battery_mv,created) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (drifter, ts, int(state), proba, json.dumps(features), int(bool(saturated)),
+                 (int(battery) if battery is not None else None),
+                 (int(battery_mv) if battery_mv is not None else None), time.time()))
             self.db.commit()
 
     def labeled_readings(self, drifter):
@@ -190,7 +199,9 @@ class Store:
     def recent_detections(self, drifter, limit=200):
         with self._lock:
             rows = self.db.execute(
-                "SELECT ts,state,proba,features,saturated FROM detections WHERE drifter=? ORDER BY rowid DESC LIMIT ?",
+                "SELECT ts,state,proba,features,saturated,battery,battery_mv FROM detections "
+                "WHERE drifter=? ORDER BY rowid DESC LIMIT ?",
                 (drifter, limit)).fetchall()
-        return [{"ts": ts, "state": st, "proba": p, "features": json.loads(f or "[]"), "saturated": bool(sat)}
-                for ts, st, p, f, sat in reversed(rows)]
+        return [{"ts": ts, "state": st, "proba": p, "features": json.loads(f or "[]"),
+                 "saturated": bool(sat), "battery": batt, "battery_mv": bmv}
+                for ts, st, p, f, sat, batt, bmv in reversed(rows)]

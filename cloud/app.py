@@ -133,7 +133,8 @@ async def post_detections(req: Request, authorization: str = Header(None)):
     _auth(authorization)
     b = await req.json()
     store.add_detection(b["drifter"], float(b["ts"]), int(b["state"]), b.get("proba"),
-                        b.get("features", []), b.get("saturated", False))
+                        b.get("features", []), b.get("saturated", False),
+                        b.get("battery"), b.get("battery_mv"))
     return {"ok": True}
 
 
