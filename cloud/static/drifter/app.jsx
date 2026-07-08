@@ -106,6 +106,7 @@ function App() {
   const [liveFeatures, setLiveFeatures] = useState(null);
   const [saturated, setSaturated] = useState(false);
   const [battery, setBattery] = useState(null);       // {pct, mv} from the latest detection (null until reported)
+  const [tab, setTab] = useState('console');          // 'console' (the training zones) | 'camera'
   const [showFeatures, setShowFeatures] = useState(false);   // hidden by default -- a cleaner console on
                                                               // landing; expand via the "Show live features" button
 
@@ -257,8 +258,17 @@ function App() {
         <span className="hdr__id mono">{drifter}</span>
         <span className="hdr__spacer" />
         <BatteryPill battery={battery} />
+        <nav style={{ display: 'flex', gap: 6, marginLeft: 14 }}>
+          {[['console', 'Console'], ['camera', 'Camera']].map(([id, label]) => (
+            <button key={id} className={`btn btn--sm ${tab === id ? 'btn--primary' : 'btn--ghost'}`}
+                    onClick={() => setTab(id)}>{label}</button>
+          ))}
+        </nav>
       </header>
 
+      {tab === 'camera' && <CameraTab drifter={drifter} />}
+
+      {tab === 'console' && (<>
       {/* ZONE 1 — live now */}
       <section className="zone">
         <div className="zone__head">
@@ -333,6 +343,7 @@ function App() {
         </div>
         <ModelsZone models={registry.models} liveVersion={registry.liveVersion} onPush={doPush} onNote={doNote} />
       </section>
+      </>)}
 
       {/* toasts */}
       <div className="toast-wrap">

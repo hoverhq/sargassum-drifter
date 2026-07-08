@@ -56,10 +56,20 @@ const API = (() => {
     });
     return r.ok;
   }
+  async function postCaptureRequest(drifter, res) {
+    const r = await fetch(`/capture-request?${qs({ drifter })}`, {
+      method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ res }),
+    });
+    return r.json();
+  }
+  async function getPhotos(drifter) {
+    const r = await fetch(`/api/photos?${qs({ drifter })}`, { headers: authHeaders() });
+    return r.ok ? r.json() : [];
+  }
 
   return {
     getReadings, getDetections, getLabels, postLabel, deleteLabel, clearLabels,
-    postTrain, postPush, getModels, patchModelNote,
+    postTrain, postPush, getModels, patchModelNote, postCaptureRequest, getPhotos,
   };
 })();
 
