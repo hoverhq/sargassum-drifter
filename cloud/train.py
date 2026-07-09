@@ -42,12 +42,18 @@ class TrainError(Exception):
 
 def features_from_readings(readings):
     """readings: time-ordered [(rgb 4x3, label)]. Replay through the STREAMING shared-C features (so the
-    rolling-window features match the board), dropping saturated + unlabeled/ambiguous (label None)."""
+    rolling-window features match the board), dropping only unlabeled/ambiguous (label None).
+
+    SATURATED samples are KEPT: saturation is itself a class signal, not noise. In direct sun (field,
+    2026-07-09) 100% of open-water AND out-of-water readings rail a channel -- dropping them collapsed the
+    dataset to one class and left the board verdict-blind in bright light. Clipped readings still carry
+    systematically class-informative features (out-of-water pegs everything -> BRIGHT ~= 1, ratios ~= 1;
+    open water pegs green but keeps blue moderate; in-mat stays dark/unclipped)."""
     fx = SargFeatures()
     X, y = [], []
     for rgb, label in readings:
-        feats, sat = fx.update(rgb)
-        if sat or label is None:
+        feats, _sat = fx.update(rgb)
+        if label is None:
             continue
         X.append(feats)
         y.append(int(label))
@@ -60,10 +66,11 @@ def train(readings, n_spans=None, n_estimators=15, max_depth=6):
     (the science tests that call train() directly on a raw stream, no span concept) skips the spans check --
     the sample-count thin check still applies."""
     X, y = features_from_readings(readings)
-    if len(X) < MIN_LABELS or len(set(y.tolist())) < 2:
-        raise TrainError(
-            f"too few labeled samples ({len(X)}; need >= {MIN_LABELS}) or a single class {set(y.tolist())} "
-            f"-- label more in/out spans")
+    if len(X) < MIN_LABELS:   # say WHICH gate fired -- a combined message misleads (field, 2026-07-09)
+        raise TrainError(f"too few labeled samples ({len(X)}; need >= {MIN_LABELS}) -- label more spans")
+    if len(set(y.tolist())) < 2:
+        raise TrainError(f"all {len(X)} labeled samples are a single class {set(y.tolist())} "
+                         f"-- label spans of at least one other class")
     Xtr, Xva, ytr, yva = train_test_split(X, y, test_size=0.3, random_state=0, stratify=y)
 
     # separability gate: standardize (logreg is scale-sensitive; the RF below is not) then score held-out

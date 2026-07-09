@@ -45,9 +45,12 @@ def test_flicker_raises_temporal_feature():
     assert fflk[FLICKER] > fin[FLICKER], "frond-flicker should raise the rolling temporal fluctuation"
 
 
-def test_saturation_samples_excluded():
+def test_saturation_samples_kept():
+    # Saturation IS a class signal (field 2026-07-09: direct sun rails 100% of open-water AND out-of-water
+    # samples -- dropping them left train a single class and the board verdict-blind in bright sun). Clipped
+    # readings keep systematically class-informative features (BRIGHT, ratios), so they train + infer.
     X, y = features_from_readings(stream("saturation", 100, 5))
-    assert len(X) < 100, "saturated (sun-glint) samples must be dropped from training"
+    assert len(X) == 100, "saturated samples must be KEPT for training (saturation is a class signal)"
 
 
 # --- training pipeline ---

@@ -467,7 +467,10 @@ void loop() {
     }
     r.sat = sarg_update(&g_feat, r.rgb, r.feat);   // shared streaming features (== the cloud trainer)
     r.proba = 0.0f; r.state = sm_state;
-    if (g_active && !r.sat) {                        // infer only on a loaded model + a clean sample
+    // Infer on SATURATED samples too (matches the trainer, which keeps them): in direct sun open-water and
+    // out-of-water rail the sensors 100% of the time, so skipping them froze the verdict exactly when the
+    // 3rd class shows up. Saturation stays reported (r.sat) as telemetry.
+    if (g_active) {
       const sarg_model *m = (const sarg_model *)g_active;
       float pc[SARG_MODEL_MAX_CLASSES];
       sarg_model_proba(m, r.feat, pc);               // per-class probabilities (open-water/in-mat/out-of-water)
