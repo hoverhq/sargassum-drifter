@@ -118,6 +118,19 @@ async def ws_board(websocket: WebSocket, drifter: str = None):
                 ts = store.add_wave_reading(registered, msg["hs_mm"], msg["tp_ds"], text)
                 # forward with the SERVER receipt ts, never the board's own (untrusted) clock
                 await hub.to_ui(registered, json.dumps({**msg, "ts": ts}))
+                # A mainline beacon's wave-tank frame ALSO carries the raw RGB sample its sarg verdict
+                # was computed from (see WaveTankFrame.rgb in the firmware) -- feed it into the SAME
+                # readings/detections tables the standalone drifter's Console tab already reads, so
+                # that tab lights up for this board too with zero UI changes. Only write a detection
+                # once the feature window is stable (sarg.s); the "warming up" sentinel (sarg.c==255)
+                # is not a real class and would corrupt SARG.byLabel lookups downstream.
+                rgb = msg.get("rgb")
+                if rgb:
+                    store.add_reading(registered, ts, rgb)
+                    sarg = msg.get("sarg") or {}
+                    if sarg.get("s") and sarg.get("c") is not None and sarg["c"] != 255:
+                        store.add_detection(registered, ts, sarg["c"], sarg.get("p", 0) / 100.0,
+                                             [], False, None, msg.get("batt_mv"))
             else:
                 await hub.to_ui(registered, text)  # ack (and anything else) forwarded verbatim
     except WebSocketDisconnect:

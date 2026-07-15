@@ -277,6 +277,57 @@ def test_wave_ws_reading_stored_and_fanned_with_server_ts():
     assert len(readings) == 1 and readings[0]["hs_mm"] == 120 and readings[0]["tp_ds"] == 45
 
 
+def test_wave_ws_reading_with_rgb_also_feeds_console_readings_and_detections():
+    # A mainline beacon's wave-tank frame can carry the raw RGB sample its sarg verdict was computed
+    # from. That must ALSO land in the readings/detections tables the standalone-drifter Console tab
+    # reads (getReadings/getDetections) -- zero Console-side changes, same tables, same shapes.
+    d = "wavergb"
+    rgb = [[100, 200, 300], [0, 0, 0], [4000, 5000, 6000], [10, 20, 30]]
+    # Sync point: the store write happens BEFORE the fan-out in the server's code order, so waiting on
+    # the UI socket's forward (same pattern as test_wave_ws_reading_stored_and_fanned_with_server_ts)
+    # guarantees the REST reads below see the write -- there is nothing sent back to the BOARD socket
+    # itself for a plain reading, so waiting on it would hang forever.
+    with client.websocket_connect(f"/ws/ui?drifter={d}&token=testtok") as ui_ws:
+        with client.websocket_connect(f"/ws/board?drifter={d}", headers=H) as board_ws:
+            ui_ws.receive_json()  # presence:true
+            board_ws.send_text(json.dumps({
+                "type": "reading", "drifter": d, "hs_mm": 50, "tp_ds": 30,
+                "rgb_mask": 13, "rgb": rgb, "batt_mv": 3980,
+                "sarg": {"c": 1, "p": 77, "s": 1},
+            }))
+            ui_ws.receive_json()  # the forwarded reading
+
+    readings = client.get(f"/api/readings?drifter={d}", headers=H).json()
+    assert len(readings) == 1 and readings[0]["rgb"] == rgb
+
+    dets = client.get(f"/api/detections?drifter={d}", headers=H).json()
+    assert len(dets) == 1
+    assert dets[0]["state"] == 1
+    assert abs(dets[0]["proba"] - 0.77) < 1e-9   # sarg.p is 0-100 percent; store expects a 0-1 fraction
+    assert dets[0]["battery_mv"] == 3980
+
+
+def test_wave_ws_reading_with_rgb_but_warming_up_skips_detection():
+    # sarg.c == 255 ("warming up", not a real class) must NOT be written as a detection state -- only
+    # the raw reading (rgb) should land; there is nothing yet to plot on the verdict card.
+    d = "wavergbwarm"
+    rgb = [[1, 1, 1], [2, 2, 2], [3, 3, 3], [4, 4, 4]]
+    with client.websocket_connect(f"/ws/ui?drifter={d}&token=testtok") as ui_ws:
+        with client.websocket_connect(f"/ws/board?drifter={d}", headers=H) as board_ws:
+            ui_ws.receive_json()  # presence:true
+            board_ws.send_text(json.dumps({
+                "type": "reading", "drifter": d, "hs_mm": 0, "tp_ds": 0,
+                "rgb_mask": 15, "rgb": rgb, "sarg": {"c": 255, "p": 0, "s": 0},
+            }))
+            ui_ws.receive_json()  # the forwarded reading
+
+    readings = client.get(f"/api/readings?drifter={d}", headers=H).json()
+    assert len(readings) == 1 and readings[0]["rgb"] == rgb
+
+    dets = client.get(f"/api/detections?drifter={d}", headers=H).json()
+    assert len(dets) == 0
+
+
 def test_wave_ws_board_without_query_param_registers_from_first_frame():
     # The firmware connects to bare /ws/board (no ?drifter=) and identifies itself by the "drifter"
     # field in its frames. The server must register it lazily from the first reading and route/store
