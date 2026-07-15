@@ -53,7 +53,6 @@ function useWaveSocket(drifter) {
   const [pending, setPending] = useState(0);
   const [acks, setAcks] = useState([]);
   const wsRef = useRef(null);
-  const closedRef = useRef(false);
 
   const appendReading = useCallback((r) => {
     setReadings(prev => ringPush(prev, r, READINGS_CAP));
@@ -63,7 +62,7 @@ function useWaveSocket(drifter) {
   }, []);
 
   useEffect(() => {
-    closedRef.current = false;
+    let closed = false;
 
     const dispatch = (raw) => {
       let msg;
@@ -80,16 +79,16 @@ function useWaveSocket(drifter) {
     };
 
     const connect = () => {
-      if (closedRef.current) return;
+      if (closed) return;
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       const url = `${proto}://${location.host}/ws/ui?drifter=${encodeURIComponent(drifter)}&token=${encodeURIComponent(TOKEN)}`;
       const ws = new WebSocket(url);
       wsRef.current = ws;
       ws.onmessage = (ev) => dispatch(ev.data);
       ws.onclose = () => {
-        if (closedRef.current) return;
+        if (closed) return;
         setConnected(false);
-        setTimeout(connect, RECONNECT_MS);   // no-op if unmounted (closedRef guards connect)
+        setTimeout(connect, RECONNECT_MS);   // no-op if unmounted (closed guard prevents duplicate connect)
       };
       ws.onerror = () => { try { ws.close(); } catch (e) { /* onclose handles reconnect */ } };
     };
@@ -100,7 +99,7 @@ function useWaveSocket(drifter) {
         API.getWaveReadings(drifter, Date.now() / 1000 - 3600),
         API.getWaveRuns(drifter),
       ]);
-      if (closedRef.current) return;
+      if (closed) return;
       const norm = rows.map(normReading);
       setReadings(norm.slice(-READINGS_CAP));
       const flat = [];
@@ -111,7 +110,7 @@ function useWaveSocket(drifter) {
     })();
 
     return () => {
-      closedRef.current = true;
+      closed = true;
       if (wsRef.current) { try { wsRef.current.close(); } catch (e) { /* unmounting */ } }
     };
   }, [drifter, appendReading]);
