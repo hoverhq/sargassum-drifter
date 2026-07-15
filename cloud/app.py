@@ -319,6 +319,16 @@ def api_detections(drifter: str, authorization: str = Header(None)):
     return JSONResponse(store.recent_detections(drifter))
 
 
+@app.get("/api/drifters")
+def api_drifters(authorization: str = Header(None)):
+    _auth(authorization)
+    # The dashboard's board switcher lists every drifter the rig knows: those with rows in the store UNION
+    # any board live on the WS hub right now (a board that just connected but hasn't stored a row yet must
+    # still appear, else you couldn't select the board you just powered on).
+    names = set(store.distinct_drifters()) | set(hub.boards.keys())
+    return JSONResponse(sorted(names))
+
+
 # ── remote shutter ──────────────────────────────────────────────────────────
 @app.post("/capture-request")
 async def post_capture_request(drifter: str, req: Request, authorization: str = Header(None)):

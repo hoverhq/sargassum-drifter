@@ -226,6 +226,22 @@ def test_label_span_crud():
     assert client.get("/api/labels?drifter=" + d, headers=H).json() == []
 
 
+def test_drifters_list_unions_stored_and_live_boards():
+    # unknown/missing token is rejected like every other /api route
+    assert client.get("/api/drifters").status_code == 401
+    # two drifters with stored data (one via /readings, one via /detections) both appear, sorted
+    client.post("/readings", json={"drifter": "zdrift", "ts": 1, "rgb": [[1, 1, 1]] * 4}, headers=H)
+    client.post("/detections", json={"drifter": "adrift", "ts": 1.0, "state": 0, "proba": 0.5,
+                                     "features": [0.0] * 16, "saturated": False}, headers=H)
+    lst = client.get("/api/drifters", headers=H).json()
+    assert "adrift" in lst and "zdrift" in lst
+    assert lst == sorted(lst)  # returned sorted
+    # a board live on the WS hub with no stored rows yet is also listed (union covers a just-connected board)
+    with client.websocket_connect("/ws/board?drifter=livedrift", headers=H):
+        live = client.get("/api/drifters", headers=H).json()
+        assert "livedrift" in live and live == sorted(live)
+
+
 def test_dashboard_bakes_token():
     body = client.get("/").text
     assert '"__SARG_TOKEN__"' not in body   # placeholder is replaced server-side

@@ -66,6 +66,11 @@ const API = (() => {
     const r = await fetch(`/api/photos?${qs({ drifter })}`, { headers: authHeaders() });
     return r.ok ? r.json() : [];
   }
+  // Rig-wide, not per-drifter: every board the rig knows about, for the header's board switcher.
+  async function getDrifters() {
+    const r = await fetch('/api/drifters', { headers: authHeaders() });
+    return r.ok ? r.json() : [];
+  }
 
   // ── wave-tank bench rig ──
   // Live telemetry rides the /ws/ui WebSocket (opened by wavetank.jsx). These REST calls seed history on
@@ -106,7 +111,7 @@ const API = (() => {
 
   return {
     getReadings, getDetections, getLabels, postLabel, deleteLabel, clearLabels,
-    postTrain, postPush, getModels, patchModelNote, postCaptureRequest, getPhotos,
+    postTrain, postPush, getModels, patchModelNote, postCaptureRequest, getPhotos, getDrifters,
     getWaveReadings, getWaveRuns, startWaveRun, stopWaveRun, sendWaveCommand,
   };
 })();

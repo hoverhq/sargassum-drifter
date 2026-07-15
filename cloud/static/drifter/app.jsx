@@ -96,6 +96,31 @@ function adaptModels(raw) {
 
 const EMPTY_SENSORS = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]];
 
+// Header board switcher for a rig running several drifters. The active drifter is captured once at page
+// load (App's useRef), so a change here just reloads with ?drifter=<name> rather than trying to rewire
+// every panel's `drifter` reactively (out of scope). The current drifter is always seeded into the list so
+// the control never renders blank before /api/drifters lands.
+function DrifterSelect({ drifter }) {
+  const [drifters, setDrifters] = useState([drifter]);
+  useEffect(() => {
+    let stop = false;
+    API.getDrifters().then(list => {
+      if (stop) return;
+      setDrifters([...new Set([drifter, ...(list || [])])].sort());
+    });
+    return () => { stop = true; };
+  }, [drifter]);
+  const onChange = (e) => {
+    if (e.target.value !== drifter) location.search = '?drifter=' + encodeURIComponent(e.target.value);
+  };
+  return (
+    <select className="cam-res mono" value={drifter} onChange={onChange}
+            title="Switch drifter (board)" aria-label="Active drifter">
+      {drifters.map(d => <option key={d} value={d}>{d}</option>)}
+    </select>
+  );
+}
+
 function App() {
   const drifter = useRef(drifterFromUrl()).current;
 
@@ -272,7 +297,7 @@ function App() {
       <header className="hdr">
         <span className="hov-mark" />
         <span className="hdr__title">Hover<i>·</i>Drifter Field Console</span>
-        <span className="hdr__id mono">{drifter}</span>
+        <DrifterSelect drifter={drifter} />
         <span className="hdr__spacer" />
         <LastSeen wall={lastDataWall} nowMs={nowMs} />
         <BatteryPill battery={battery} />

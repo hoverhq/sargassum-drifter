@@ -260,6 +260,21 @@ class Store:
                  "saturated": bool(sat), "battery": batt, "battery_mv": bmv}
                 for ts, st, p, f, sat, batt, bmv in reversed(rows)]
 
+    def distinct_drifters(self):
+        """Every drifter name the store has ever recorded, across all data tables, sorted. Union so a
+        board that has rows in only ONE table (e.g. wave-tank readings but no old-style /readings yet)
+        still shows up in the dashboard's board switcher. Table names are a fixed literal whitelist --
+        they never come from a request -- so interpolating them into the query is safe (values are still
+        never interpolated; there are none to bind here)."""
+        _tables = ("readings", "labels", "detections", "photos", "wave_readings", "wave_runs", "models")
+        with self._lock:
+            names = set()
+            for t in _tables:
+                for (d,) in self.db.execute(f"SELECT DISTINCT drifter FROM {t}"):
+                    if d:
+                        names.add(d)
+        return sorted(names)
+
     # ── wave-tank telemetry: a bench rig drives a physical wave maker at a set height/period and the
     # board reports back significant-wave-height/period readings; runs bracket a bench session so the
     # dashboard can align readings against the commanded target. ──
