@@ -75,22 +75,32 @@ class WaveHub:
 hub = WaveHub()
 
 
-@app.websocket("/ws/board")
-async def ws_board(websocket: WebSocket, drifter: str):
-    if websocket.headers.get("authorization") != f"Bearer {TOKEN}":
-        await websocket.close(code=4401)  # reject before accept -- no socket ever gets registered
-        return
-    await websocket.accept()
+async def _register_board(websocket, drifter):
+    # Register a board socket under its drifter name: track it, tell the UIs it's live (the normal
+    # sequence is dashboard-open-first / board-powers-on-later, so a late connect must broadcast),
+    # and flush any commands queued while it was offline.
     hub.boards[drifter] = websocket
-    # symmetric with the disconnect broadcast below -- the normal sequence is operator opens the
-    # dashboard first, board powers on later, so the UI needs to learn about a LATE connect too
-    # (it can't just infer connectivity from the first reading).
     await hub.to_ui(drifter, json.dumps({"type": "board", "connected": True}))
-    for cmd in hub.pending.pop(drifter, []):  # flush anything queued while this board was offline
+    for cmd in hub.pending.pop(drifter, []):
         try:
             await websocket.send_text(json.dumps({"type": "cmd", "cmd": cmd}))
         except Exception:
             break
+
+
+@app.websocket("/ws/board")
+async def ws_board(websocket: WebSocket, drifter: str = None):
+    if websocket.headers.get("authorization") != f"Bearer {TOKEN}":
+        await websocket.close(code=4401)  # reject before accept -- no socket ever gets registered
+        return
+    await websocket.accept()
+    # A board identifies itself by ?drifter= on the URL if it can; a board that can't (its frames
+    # already carry a "drifter" field) is registered lazily from the first reading. `registered`
+    # holds the name this socket is bound to -- None until we learn it.
+    registered = None
+    if drifter:
+        registered = drifter
+        await _register_board(websocket, drifter)
     try:
         while True:
             text = await websocket.receive_text()
@@ -98,18 +108,25 @@ async def ws_board(websocket: WebSocket, drifter: str):
                 msg = json.loads(text)
             except ValueError:
                 continue  # not JSON -- ignore rather than kill the connection over one bad frame
+            if registered is None:
+                d = msg.get("drifter")
+                if not d:
+                    continue  # no query param and no drifter field -- nothing to route on yet
+                registered = d
+                await _register_board(websocket, d)
             if msg.get("type") == "reading":
-                ts = store.add_wave_reading(drifter, msg["hs_mm"], msg["tp_ds"], text)
+                ts = store.add_wave_reading(registered, msg["hs_mm"], msg["tp_ds"], text)
                 # forward with the SERVER receipt ts, never the board's own (untrusted) clock
-                await hub.to_ui(drifter, json.dumps({**msg, "ts": ts}))
+                await hub.to_ui(registered, json.dumps({**msg, "ts": ts}))
             else:
-                await hub.to_ui(drifter, text)  # ack (and anything else) forwarded verbatim
+                await hub.to_ui(registered, text)  # ack (and anything else) forwarded verbatim
     except WebSocketDisconnect:
         pass
     finally:
-        if hub.boards.get(drifter) is websocket:
-            hub.boards.pop(drifter, None)
-        await hub.to_ui(drifter, json.dumps({"type": "board", "connected": False}))
+        if registered is not None:
+            if hub.boards.get(registered) is websocket:
+                hub.boards.pop(registered, None)
+            await hub.to_ui(registered, json.dumps({"type": "board", "connected": False}))
 
 
 @app.websocket("/ws/ui")

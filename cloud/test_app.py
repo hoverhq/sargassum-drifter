@@ -277,6 +277,24 @@ def test_wave_ws_reading_stored_and_fanned_with_server_ts():
     assert len(readings) == 1 and readings[0]["hs_mm"] == 120 and readings[0]["tp_ds"] == 45
 
 
+def test_wave_ws_board_without_query_param_registers_from_first_frame():
+    # The firmware connects to bare /ws/board (no ?drifter=) and identifies itself by the "drifter"
+    # field in its frames. The server must register it lazily from the first reading and route/store
+    # under that name -- and NOT reject the handshake for a missing query param.
+    d = "wavelazy"
+    with client.websocket_connect(f"/ws/ui?drifter={d}&token=testtok") as ui_ws:
+        assert ui_ws.receive_json() == {"type": "board", "connected": False}
+        with client.websocket_connect("/ws/board", headers=H) as board_ws:  # NO ?drifter=
+            board_ws.send_text(json.dumps({"type": "reading", "drifter": d, "hs_mm": 88, "tp_ds": 62}))
+            presence_on = ui_ws.receive_json()  # registration happens on the first frame -> presence:true
+            assert presence_on == {"type": "board", "connected": True}
+            fwd = ui_ws.receive_json()
+            assert fwd["type"] == "reading" and fwd["hs_mm"] == 88 and isinstance(fwd["ts"], (int, float))
+        assert ui_ws.receive_json() == {"type": "board", "connected": False}
+    readings = client.get(f"/api/wave-readings?drifter={d}", headers=H).json()
+    assert len(readings) == 1 and readings[0]["hs_mm"] == 88 and readings[0]["tp_ds"] == 62
+
+
 def test_wave_ws_server_ts_overrides_board_ts():
     d = "wavespoof"
     with client.websocket_connect(f"/ws/ui?drifter={d}&token=testtok") as ui_ws:
