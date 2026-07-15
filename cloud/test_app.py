@@ -10,16 +10,24 @@ import os
 import tempfile
 import time
 
+import pytest
+
 os.environ["SARG_DB"] = tempfile.mktemp(suffix=".db")
 os.environ["SARG_PHOTO_DIR"] = tempfile.mkdtemp(prefix="sargphotos-")
 os.environ["SARG_TOKEN"] = "testtok"
 
+from fastapi import WebSocketDisconnect  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 import app as appmod  # noqa: E402
 from store import Store  # noqa: E402
 from synthetic import stream  # noqa: E402
 
 client = TestClient(appmod.app)
+# Enter the client's context so every websocket_connect() shares ONE portal/event loop instead of each
+# spinning up its own thread. The wave-tank hub is documented as module-level/single-loop (no locks) --
+# without this, two concurrently-open test sockets (board + ui) run on different loops and a message
+# handed from one to the other races the receiving loop's wakeup, hanging intermittently.
+client.__enter__()
 H = {"Authorization": "Bearer testtok"}
 
 
@@ -235,3 +243,64 @@ def test_wave_store_run_lifecycle():
     assert runs2[0]["stopped_ts"] is not None
 
     assert s.stop_wave_run(d) is False  # no open run left
+
+
+# ── wave-tank WS hub: /ws/board (bench rig) + /ws/ui (dashboard fan-out) exercised over the real app
+# via TestClient's WebSocket support, plus the REST run/command routes that talk to the hub. ──
+def test_wave_ws_board_rejects_bad_token():
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/board?drifter=wsauth",
+                                       headers={"Authorization": "Bearer wrongtoken"}):
+            pass
+    assert exc_info.value.code == 4401
+
+
+def test_wave_ws_reading_stored_and_fanned_with_server_ts():
+    d = "wavefan"
+    with client.websocket_connect(f"/ws/ui?drifter={d}&token=testtok") as ui_ws:
+        snap = ui_ws.receive_json()
+        assert snap == {"type": "board", "connected": False}  # no board yet
+
+        with client.websocket_connect(f"/ws/board?drifter={d}", headers=H) as board_ws:
+            board_ws.send_text(json.dumps({"type": "reading", "drifter": d, "hs_mm": 120, "tp_ds": 45}))
+            fwd = ui_ws.receive_json()
+            assert fwd["type"] == "reading" and fwd["hs_mm"] == 120 and fwd["tp_ds"] == 45
+            assert isinstance(fwd["ts"], (int, float))  # server-injected receipt time, not the board's clock
+
+        presence = ui_ws.receive_json()  # board disconnect broadcasts presence:false to open UI sockets
+        assert presence == {"type": "board", "connected": False}
+
+    readings = client.get(f"/api/wave-readings?drifter={d}", headers=H).json()
+    assert len(readings) == 1 and readings[0]["hs_mm"] == 120 and readings[0]["tp_ds"] == 45
+
+
+def test_wave_ws_command_pends_then_flushes_on_board_connect():
+    d = "wavecmd"
+    r = client.post("/api/wave-command", json={"drifter": d, "cmd": "ping"}, headers=H)
+    assert r.status_code == 200
+    j = r.json()
+    assert j["sent"] is False and j["pending"] == 1  # no board connected -> queued, not delivered
+
+    with client.websocket_connect(f"/ws/board?drifter={d}", headers=H) as board_ws:
+        flushed = board_ws.receive_json()  # queued command flushed on (re)connect
+        assert flushed == {"type": "cmd", "cmd": "ping"}
+
+
+def test_wave_run_start_stop_writes_rows_and_sends_commands():
+    d = "waverun"
+    with client.websocket_connect(f"/ws/board?drifter={d}", headers=H) as board_ws:
+        r = client.post("/api/wave-run", json={"drifter": d, "h_mm": 150, "t_ds": 60, "note": "bench"}, headers=H)
+        assert r.status_code == 200, r.text
+        rid = r.json()["id"]
+        assert board_ws.receive_json() == {"type": "cmd", "cmd": "start-run 150 60"}
+
+        runs = client.get(f"/api/wave-runs?drifter={d}", headers=H).json()
+        assert len(runs) == 1
+        assert runs[0]["id"] == rid and runs[0]["stopped_ts"] is None and runs[0]["note"] == "bench"
+
+        r2 = client.post("/api/wave-run/stop", json={"drifter": d}, headers=H)
+        assert r2.status_code == 200 and r2.json()["stopped"] is True
+        assert board_ws.receive_json() == {"type": "cmd", "cmd": "stop-run"}
+
+        runs2 = client.get(f"/api/wave-runs?drifter={d}", headers=H).json()
+        assert runs2[0]["stopped_ts"] is not None
