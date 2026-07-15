@@ -139,11 +139,18 @@ function App() {
   useEffect(() => {
     let stop = false;
     const tick = async () => {
-      const [readings, dets] = await Promise.all([API.getReadings(drifter), API.getDetections(drifter)]);
+      const [readings, dets, waveReadings] = await Promise.all([
+        API.getReadings(drifter), API.getDetections(drifter),
+        API.getWaveReadings(drifter, Date.now() / 1000 - 120),   // just enough to catch a fresh ts
+      ]);
       if (stop) return;
-      // freshest server-receipt time across readings + detections = when the drifter last sent data
+      // freshest server-receipt time across readings/detections AND the wave-tank uplink (a mainline
+      // beacon on the WS uplink sends wave telemetry, not old-style /readings POSTs -- without this,
+      // LAST DATA reads stale/"3d ago" even while the board is actively streaming to the wave tank).
       const freshWall = readings.reduce((m, r) => Math.max(m, r.wall || 0), 0);
-      if (freshWall > 0) setLastDataWall(freshWall);
+      const freshWave = waveReadings.reduce((m, r) => Math.max(m, r.ts || 0), 0);
+      const fresh = Math.max(freshWall, freshWave);
+      if (fresh > 0) setLastDataWall(fresh);
       if (readings.length) {
         // normalize the API shape ({ts, rgb, wall}) to what Timeline/LiveNow expect, plus the timestamp-
         // aligned model call (what the board's OWN verdict was at this reading's instant -- see
