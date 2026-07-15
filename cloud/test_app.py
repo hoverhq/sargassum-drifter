@@ -97,6 +97,18 @@ def test_detection_battery_telemetry():
     assert dets[1]["battery"] is None and dets[1]["battery_mv"] is None
 
 
+def test_capture_request_also_pushes_over_ws_to_a_connected_board():
+    # The Camera-tab shutter POSTs /capture-request. A WS-uplink beacon never polls the legacy
+    # pending-capture flag, so the endpoint must ALSO push the command over the live hub channel --
+    # otherwise the shutter is a silent no-op for the wave-tank firmware.
+    d = "wscap"
+    with client.websocket_connect(f"/ws/board?drifter={d}", headers=H) as board_ws:
+        r = client.post("/capture-request?drifter=" + d, json={"res": "HD"}, headers=H)
+        assert r.status_code == 200 and r.json()["sent"] is True
+        cmd = board_ws.receive_json()
+        assert cmd == {"type": "cmd", "cmd": "capture HD"}
+
+
 def test_capture_command_is_one_shot():
     d = "camcmd"
     # no command pending -> detection response carries no capture

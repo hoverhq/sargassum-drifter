@@ -324,8 +324,15 @@ def api_detections(drifter: str, authorization: str = Header(None)):
 async def post_capture_request(drifter: str, req: Request, authorization: str = Header(None)):
     _auth(authorization)
     b = await req.json()
-    store.set_pending_capture(drifter, str(b.get("res", "5MP")))
-    return {"ok": True}
+    res = str(b.get("res", "5MP"))
+    # set_pending_capture is the LEGACY delivery: an HTTP-polling board picks it up on its next poll.
+    # The wave-tank WS-uplink beacon never polls that flag -- it only listens on the live command
+    # channel -- so also push the command over the hub, the same delivery /api/wave-command uses. Both
+    # paths are safe to run: a WS board ignores the pending flag; a poll board isn't on the hub, so
+    # send_cmd just queues (which it also polls). No double-capture for either.
+    store.set_pending_capture(drifter, res)
+    sent = await hub.send_cmd(drifter, f"capture {res}")
+    return {"ok": True, "sent": sent}
 
 
 @app.post("/photos")
