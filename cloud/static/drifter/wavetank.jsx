@@ -12,7 +12,9 @@
    mount from /api/wave-readings so the charts are populated before the socket's first frame.
 
    Charts are hand-rolled inline SVG (no chart lib): a fixed 1000-wide viewBox scaled to the container via
-   preserveAspectRatio="none", so no element measurement / ResizeObserver is needed. */
+   preserveAspectRatio="none", so no element measurement / ResizeObserver is needed. The presentation —
+   info tooltips, the stat grid, the hover cursor/tooltip on the charts, and the param rows — is the
+   cleaned-up console styling; the numbers behind it are all real board telemetry. */
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 const READINGS_CAP = 7200;   // ~1 h at 2 Hz
@@ -125,6 +127,17 @@ function useWaveSocket(drifter) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// INFO BADGE — explanatory tooltip on hover/focus
+// ─────────────────────────────────────────────────────────────
+function WtInfo({ tip }) {
+  return (
+    <span className="wt-info" tabIndex={0} role="img" aria-label={tip}>
+      i<span className="wt-info__pop">{tip}</span>
+    </span>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
 // HEAVE STRIP — last ~60 s of raw 10 Hz vertical accel
 // ─────────────────────────────────────────────────────────────
 function HeaveStrip({ samples }) {
@@ -143,8 +156,10 @@ function HeaveStrip({ samples }) {
   const zeroY = yOf(0).toFixed(1);
   return (
     <div className="card" style={{ marginBottom: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 8 }}>
         <span className="eyebrow">Heave · raw vertical accel (10 Hz)</span>
+        <WtInfo tip="Raw vertical acceleration sampled at 10 Hz — the signal everything else is derived from. The board band-passes and integrates this into the wave spectrum used for Hs and Tp." />
+        <span style={{ flex: 1 }} />
         <span className="mono" style={{ fontSize: 'var(--text-xs)', color: 'var(--t-4)' }}>±{half.toFixed(2)} m/s²</span>
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none"
@@ -166,20 +181,37 @@ function HeaveStrip({ samples }) {
 // ─────────────────────────────────────────────────────────────
 // Hs / Tp CHART — two stacked panels on a shared session-time x-axis
 // ─────────────────────────────────────────────────────────────
-const CHART_W = 1000, CHART_PADL = 46, CHART_PADR = 12;
+const CHART_W = 1000;
+const RANGES = [['10m', 10], ['30m', 30], ['1h', 60]];
 
-function fmtElapsed(sec) {
-  sec = Math.max(0, Math.round(sec));
-  const m = Math.floor(sec / 60), s = sec % 60;
-  return `${m}:${String(s).padStart(2, '0')}`;
+// Relative x-axis label for a "minutes back from now" tick (e.g. -30m). Integers render clean; a custom
+// fractional window keeps one decimal.
+function fmtRange(min) {
+  if (min <= 0) return 'now';
+  const m = min >= 10 ? Math.round(min) : Math.round(min * 10) / 10;
+  return `-${m}m`;
 }
 
-// One panel: y-gridded frame, run-span shading, an optional gapped series polyline, and a stepped
-// ground-truth overlay. `series` is the board estimate {points:[{ts,v}], gapAtZero}; `truth` is the
-// commanded value per run.
-function ChartPanel({ label, unit, readings, runs, tMin, tMax, now, valueOf, truthOf, color, yMinFloor }) {
-  const H = 150, padT = 12, padB = 22;
-  const xOf = (ts) => CHART_PADL + (tMax > tMin ? (ts - tMin) / (tMax - tMin) : 0) * (CHART_W - CHART_PADL - CHART_PADR);
+// Relative hover label from a reading's age in seconds: "now" at the leading edge, "-m:ss ago" behind it.
+function fmtAgo(secAgo) {
+  secAgo = Math.max(0, Math.round(secAgo));
+  if (secAgo === 0) return 'now';
+  const m = Math.floor(secAgo / 60), s = secAgo % 60;
+  return `-${m}:${String(s).padStart(2, '0')} ago`;
+}
+
+// One panel: an off-SVG y-axis column + a hover-tracked plot with faint y-grid, run-span shading, a
+// dashed commanded ground-truth overlay held flat across each run's [started, stopped||now] span, and the
+// board estimate as a gapped polyline (valueOf() returns null wherever there is no value — Tp==0 gated =
+// a GAP, NOT a plunge to zero). The x-axis maps the real server `ts`; hover snaps to the nearest reading
+// and reports both the board estimate and the commanded value at that instant.
+function ChartPanel({ label, unit, tip, readings, runs, tMin, tMax, now, windowMin, valueOf, truthOf, fmt, yMinFloor }) {
+  const H = 180, padT = 12, padB = 10;
+  const [hover, setHover] = useState(null);
+
+  const span = tMax > tMin ? tMax - tMin : 1;
+  const xOf = (ts) => ((ts - tMin) / span) * CHART_W;
+  const cx = (x) => Math.max(0, Math.min(CHART_W, x));   // clamp run overlay to the visible window
 
   // y-domain over both the board series and the commanded truth so neither clips.
   let vMax = yMinFloor;
@@ -188,8 +220,7 @@ function ChartPanel({ label, unit, readings, runs, tMin, tMax, now, valueOf, tru
   vMax = vMax * 1.15 || 1;
   const yOf = (v) => (H - padB) - (v / vMax) * (H - padT - padB);
 
-  // board series, broken into segments wherever valueOf() returns null (Tp==0 = "no period gated", a GAP
-  // — NOT a plunge to zero).
+  // board series, broken into segments wherever valueOf() returns null.
   const segs = [];
   let cur = [];
   for (const r of readings) {
@@ -199,89 +230,208 @@ function ChartPanel({ label, unit, readings, runs, tMin, tMax, now, valueOf, tru
   }
   if (cur.length) segs.push(cur);
 
-  const yTicks = [0, vMax / 2, vMax];
+  // commanded value active at a given server ts (the run whose span brackets it), or null.
+  const commandedAt = (ts) => {
+    let v = null;
+    for (const run of runs) {
+      const s = run.started_ts, e = run.stopped_ts != null ? run.stopped_ts : now;
+      if (ts >= s && ts <= e) { const tv = truthOf(run); if (tv != null) v = tv; }
+    }
+    return v;
+  };
+
+  const onMove = (e) => {
+    if (!readings.length) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const f = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const tsHover = tMin + f * span;
+    // snap to the nearest reading so the cursor + dot land on real data
+    let best = readings[0], bd = Math.abs(readings[0].ts - tsHover);
+    for (const r of readings) { const d = Math.abs(r.ts - tsHover); if (d < bd) { bd = d; best = r; } }
+    const estVal = valueOf(best);
+    setHover({
+      xPct: (xOf(best.ts) / CHART_W) * 100,
+      agoLabel: fmtAgo(now - best.ts),
+      estVal,
+      estYPct: estVal != null ? (yOf(estVal) / H) * 100 : null,
+      cmdVal: commandedAt(best.ts),
+    });
+  };
+
+  const yTicks = [vMax, vMax / 2, 0];
   return (
     <div style={{ marginTop: 4 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
         <span className="eyebrow">{label}</span>
-        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--t-4)' }}>{unit}</span>
+        <span className="mono" style={{ fontSize: 'var(--text-2xs)', color: 'var(--t-4)' }}>{unit}</span>
+        {tip && <WtInfo tip={tip} />}
         <span style={{ flex: 1 }} />
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 'var(--text-2xs)', color: 'var(--t-3)' }}>
-          <span style={{ width: 14, height: 2, background: color, display: 'inline-block' }} /> board estimate
-          <span style={{ width: 14, height: 0, borderTop: '2px dashed var(--olive)', display: 'inline-block', marginLeft: 8 }} /> commanded
-        </span>
+        <span className="wt-legend"><i className="wt-li wt-li--est" /> board estimate</span>
+        <span className="wt-legend"><i className="wt-li wt-li--cmd" /> commanded</span>
       </div>
-      <svg viewBox={`0 0 ${CHART_W} ${H}`} preserveAspectRatio="none"
-           style={{ width: '100%', height: 150, display: 'block' }}>
-        {/* y gridlines + labels */}
-        {yTicks.map((t, i) => (
-          <g key={i}>
-            <line x1={CHART_PADL} y1={yOf(t)} x2={CHART_W - CHART_PADR} y2={yOf(t)}
-                  stroke="var(--hair-1)" strokeWidth="1" />
-            <text x={CHART_PADL - 6} y={yOf(t) + 3} textAnchor="end" fill="var(--t-4)" fontSize="11"
-                  fontFamily="'JetBrains Mono', monospace">{t.toFixed(t < 10 ? 1 : 0)}</text>
-          </g>
-        ))}
-        {/* run-span shading */}
-        {runs.map(run => {
-          const x0 = xOf(run.started_ts);
-          const x1 = xOf(run.stopped_ts != null ? run.stopped_ts : now);
-          return <rect key={run.id} x={x0} y={padT} width={Math.max(0, x1 - x0)} height={H - padT - padB}
-                       fill="var(--olive)" opacity="0.06" />;
-        })}
-        {/* commanded ground-truth: flat across each run's [started, stopped||now] span */}
-        {runs.map(run => {
-          const v = truthOf(run);
-          if (v == null) return null;
-          const x0 = xOf(run.started_ts);
-          const x1 = xOf(run.stopped_ts != null ? run.stopped_ts : now);
-          return <line key={run.id} x1={x0} y1={yOf(v)} x2={x1} y2={yOf(v)} stroke="var(--olive)"
-                       strokeWidth="1.5" strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />;
-        })}
-        {/* board estimate, gapped */}
-        {segs.map((seg, i) => seg.length >= 2
-          ? <polyline key={i} points={seg.join(' ')} fill="none" stroke={color} strokeWidth="1.5"
-                      vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
-          : <circle key={i} cx={seg[0].split(',')[0]} cy={seg[0].split(',')[1]} r="1.6" fill={color} />)}
-        {/* x-axis ticks (session time) — labelled on this panel; both panels share the mapping */}
-        {[0, 0.5, 1].map((f, i) => {
-          const ts = tMin + f * (tMax - tMin);
-          const x = xOf(ts);
-          return (
-            <text key={i} x={x} y={H - 6} textAnchor={i === 0 ? 'start' : i === 2 ? 'end' : 'middle'}
-                  fill="var(--t-4)" fontSize="11" fontFamily="'JetBrains Mono', monospace">
-              {fmtElapsed(ts - tMin)}
-            </text>
-          );
-        })}
-      </svg>
+      <div style={{ display: 'grid', gridTemplateColumns: '52px 1fr', gap: 8, marginTop: 8 }}>
+        <div className="mono wt-axis" style={{ height: H }}>
+          {yTicks.map((t, i) => <span key={i}>{fmt(t)}</span>)}
+        </div>
+        <div className="wt-plot" style={{ height: H }}
+             onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+          <svg viewBox={`0 0 ${CHART_W} ${H}`} preserveAspectRatio="none"
+               style={{ width: '100%', height: H, display: 'block' }}>
+            {/* y gridlines */}
+            {yTicks.map((t, i) => (
+              <line key={i} x1="0" y1={yOf(t)} x2={CHART_W} y2={yOf(t)} stroke="var(--hair-1)" strokeWidth="1" />
+            ))}
+            {/* run-span shading (clamped to the visible window) */}
+            {runs.map(run => {
+              const x0 = cx(xOf(run.started_ts));
+              const x1 = cx(xOf(run.stopped_ts != null ? run.stopped_ts : now));
+              if (x1 <= x0) return null;
+              return <rect key={run.id} x={x0} y={padT} width={x1 - x0} height={H - padT - padB}
+                           fill="var(--olive)" opacity="0.06" />;
+            })}
+            {/* commanded ground-truth: flat dashed across each run's [started, stopped||now] span */}
+            {runs.map(run => {
+              const v = truthOf(run);
+              if (v == null) return null;
+              const x0 = cx(xOf(run.started_ts));
+              const x1 = cx(xOf(run.stopped_ts != null ? run.stopped_ts : now));
+              if (x1 <= x0) return null;
+              return <line key={run.id} x1={x0} y1={yOf(v)} x2={x1} y2={yOf(v)} stroke="var(--olive)"
+                           strokeWidth="1.4" strokeDasharray="7 6" vectorEffect="non-scaling-stroke" />;
+            })}
+            {/* board estimate, gapped */}
+            {segs.map((seg, i) => seg.length >= 2
+              ? <polyline key={i} points={seg.join(' ')} fill="none" stroke="var(--sage)" strokeWidth="1.6"
+                          vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+              : <circle key={i} cx={seg[0].split(',')[0]} cy={seg[0].split(',')[1]} r="1.8" fill="var(--sage)" />)}
+          </svg>
+          {hover && (
+            <>
+              <div className="wt-cursor" style={{ left: `${hover.xPct}%` }} />
+              {hover.estYPct != null && (
+                <div className="wt-dot" style={{ left: `${hover.xPct}%`, top: `${hover.estYPct}%` }} />
+              )}
+              <div className="wt-tip" style={{ left: `${hover.xPct}%`,
+                   transform: `translate(${hover.xPct > 60 ? 'calc(-100% - 12px)' : '12px'}, -50%)`,
+                   top: `${hover.estYPct != null ? hover.estYPct : 50}%` }}>
+                <div className="wt-tip__t mono">{hover.agoLabel}</div>
+                <div className="wt-tip__row"><i className="wt-li wt-li--est" /><span>estimate</span>
+                  <b className="mono">{hover.estVal != null ? `${fmt(hover.estVal)} ${unit}` : '—'}</b></div>
+                <div className="wt-tip__row"><i className="wt-li wt-li--cmd" /><span>commanded</span>
+                  <b className="mono">{hover.cmdVal != null ? `${fmt(hover.cmdVal)} ${unit}` : '—'}</b></div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+      <div className="mono wt-xaxis" style={{ marginLeft: 60 }}>
+        <span>{fmtRange(windowMin)}</span>
+        <span>{fmtRange(windowMin / 2)}</span>
+        <span>now</span>
+      </div>
     </div>
   );
 }
 
 function HsTpChart({ readings, runs, now }) {
+  const [range, setRange] = useState('30m');
+  const [customMin, setCustomMin] = useState('45');
   const sortedRuns = useMemo(() => [...runs].sort((a, b) => a.started_ts - b.started_ts), [runs]);
+  const cm = parseFloat(customMin);
+  const rangeMin = range === 'custom'
+    ? (cm >= 1 ? cm : 30)                                  // guard: <1 or NaN → default 30
+    : ({ '10m': 10, '30m': 30, '1h': 60 })[range];
   if (!readings.length) {
     return (
-      <div className="card" style={{ textAlign: 'center', color: 'var(--t-3)', fontSize: 'var(--text-sm)', padding: '28px' }}>
+      <div className="card" style={{ textAlign: 'center', color: 'var(--t-3)', fontSize: 'var(--text-sm)', padding: '28px', marginBottom: 14 }}>
         Waiting for wave telemetry… start the bench rig and its board.
       </div>
     );
   }
-  const tMin = Math.min(readings[0].ts, sortedRuns.length ? sortedRuns[0].started_ts : readings[0].ts);
-  const tMax = Math.max(readings[readings.length - 1].ts, now,
-    ...sortedRuns.map(r => (r.stopped_ts != null ? r.stopped_ts : now)));
+  // window the plotted data by REAL server ts (not sample count): the visible domain is the last
+  // `rangeMin` minutes, so the relative x-axis labels (-Nm … now) stay honest as cadence varies or gaps.
+  const tMax = now;
+  const tMin = now - rangeMin * 60;
+  const visible = readings.filter(r => r.ts >= tMin);
   return (
     <div className="card" style={{ marginBottom: 14 }}>
-      <ChartPanel label="Significant wave height (Hs)" unit="mm" readings={readings} runs={sortedRuns}
-                  tMin={tMin} tMax={tMax} now={now} color="var(--sage)" yMinFloor={10}
+      <div className="wt-rangebar">
+        <span className="eyebrow">Time range</span>
+        <span className="scn" role="tablist">
+          {RANGES.map(([k]) => (
+            <button key={k} className={range === k ? 'on' : ''} onClick={() => setRange(k)}>{k}</button>
+          ))}
+          <button className={range === 'custom' ? 'on' : ''} onClick={() => setRange('custom')}>Custom</button>
+        </span>
+        {range === 'custom' && (
+          <label className="wt-custom mono">
+            <input type="text" inputMode="decimal" value={customMin}
+                   onChange={e => setCustomMin(e.target.value)} />
+            <span>min</span>
+          </label>
+        )}
+      </div>
+      <ChartPanel label="Significant wave height (Hs)" unit="mm"
+                  tip="The board's estimate of significant wave height, in millimetres. Solid line is what the board reports; the dashed line is the height you commanded from the maker. Watch how fast the estimate settles onto the commanded value."
+                  readings={visible} runs={sortedRuns} tMin={tMin} tMax={tMax} now={now} windowMin={rangeMin}
+                  yMinFloor={10} fmt={v => v.toFixed(0)}
                   valueOf={r => (typeof r.hs_mm === 'number' ? r.hs_mm : null)}
                   truthOf={run => run.h_mm} />
-      <div style={{ height: 1, background: 'var(--hair-1)', margin: '10px 0' }} />
-      <ChartPanel label="Peak period (Tp)" unit="s" readings={readings} runs={sortedRuns}
-                  tMin={tMin} tMax={tMax} now={now} color="var(--teal)" yMinFloor={1}
+      <div style={{ height: 1, background: 'var(--hair-1)', margin: '16px 0' }} />
+      <ChartPanel label="Peak period (Tp)" unit="s"
+                  tip="The dominant wave period the board locks onto, in seconds. It reads 0 (a gap) whenever the spectral peak is below the prominence gate — no confident period to report."
+                  readings={visible} runs={sortedRuns} tMin={tMin} tMax={tMax} now={now} windowMin={rangeMin}
+                  yMinFloor={1} fmt={v => v.toFixed(1)}
                   valueOf={r => (r.tp_ds > 0 ? r.tp_ds / 10 : null)}
                   truthOf={run => (run.t_ds > 0 ? run.t_ds / 10 : null)} />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// STATUS + STATS — board presence + link/power/estimator health
+// ─────────────────────────────────────────────────────────────
+function WtStat({ label, children, tone }) {
+  return (
+    <div className="wt-stat" data-tone={tone || ''}>
+      <span className="eyebrow">{label}</span>
+      <span className="mono wt-stat__v">{children}</span>
+    </div>
+  );
+}
+
+function StatusHealth({ reading, connected, lastTs, now }) {
+  const r = reading || {};
+  const age = lastTs ? Math.max(0, now - lastTs) : null;
+  const promLow = typeof r.prom === 'number' && typeof r.prom_min === 'number' && r.prom < r.prom_min;
+  const verdict = SARG_VERDICT[r.sarg ? r.sarg.c : undefined] || { label: '—', cls: 'neutral' };
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        {connected
+          ? <span className="pill green"><span className="dot" style={{ animation: 'pulseDot 1.6s infinite' }} />board online</span>
+          : <span className="pill wine"><span className="dot" />board offline</span>}
+        <span style={{ color: 'var(--t-3)', fontSize: 'var(--text-md)' }}>
+          {age == null ? 'no frame yet' : `last frame ${age.toFixed(0)}s ago`}
+        </span>
+        <span style={{ flex: 1 }} />
+        <span className={`pill ${verdict.cls}`}><span className="dot" />{verdict.label}</span>
+      </div>
+      <div className="wt-stats">
+        <WtStat label="Fill">{r.fill != null ? `${(r.fill * 100).toFixed(0)}%` : '—'}</WtStat>
+        <WtStat label="Prominence" tone={promLow ? 'warn' : ''}>
+          {r.prom != null ? `${r.prom.toFixed(2)} / ${r.prom_min != null ? r.prom_min : '—'}` : '—'}
+        </WtStat>
+        <WtStat label="RSSI">{r.rssi != null ? `${r.rssi} dBm` : '—'}</WtStat>
+        <WtStat label="Heap">{r.heap != null ? `${(r.heap / 1024).toFixed(0)}k` : '—'}</WtStat>
+        <WtStat label="Battery">{r.batt_mv != null ? `${(r.batt_mv / 1000).toFixed(2)}V` : '—'}</WtStat>
+      </div>
+      {promLow && (
+        <div className="wt-warn">
+          <span style={{ color: 'var(--wine)' }}>▲</span>
+          Prominence is below the gate — the peak is too weak to lock a period, so Tp reads 0 (gapped above).
+        </div>
+      )}
     </div>
   );
 }
@@ -311,39 +461,35 @@ function RunPanel({ drifter, runs, onChanged }) {
     setBusy(false);
   };
 
-  const inputStyle = {
-    width: 76, background: 'var(--bg-1)', color: 'var(--t-1)', border: '1px solid var(--hair-2)',
-    borderRadius: 'var(--r-2)', padding: '7px 9px', fontFamily: "'JetBrains Mono', monospace",
-    fontSize: 'var(--text-base)',
-  };
   return (
     <div className="card">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center' }}>
         <span className="eyebrow">Bench run</span>
+        <span style={{ flex: 1 }} />
         {active
           ? <span className="pill green"><span className="dot" style={{ animation: 'pulseDot 1.4s infinite' }} />
               running · {active.h_mm} mm / {(active.t_ds / 10).toFixed(1)} s</span>
           : <span className="pill neutral"><span className="dot" />idle</span>}
       </div>
-      <div style={{ display: 'flex', gap: 14, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--t-3)' }}>Height H (mm)</span>
-          <input type="number" min="1" value={hMm} onChange={e => setHMm(e.target.value)}
-                 disabled={!!active} style={inputStyle} />
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', marginTop: 16, flexWrap: 'wrap' }}>
+        <label className="wt-field">
+          <span>Height H (mm) <WtInfo tip="Wave height to command from the maker, in millimetres. This becomes the dashed ground-truth line on the Hs chart." /></span>
+          <input className="mono" type="text" inputMode="decimal" value={hMm}
+                 onChange={e => setHMm(e.target.value)} disabled={!!active} />
         </label>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--t-3)' }}>Period T (s)</span>
-          <input type="number" min="0.1" step="0.1" value={tSec} onChange={e => setTSec(e.target.value)}
-                 disabled={!!active} style={inputStyle} />
+        <label className="wt-field">
+          <span>Period T (s) <WtInfo tip="Wave period to command from the maker, in seconds. This becomes the dashed ground-truth line on the Tp chart." /></span>
+          <input className="mono" type="text" inputMode="decimal" value={tSec}
+                 onChange={e => setTSec(e.target.value)} disabled={!!active} />
         </label>
         {active
           ? <button className="btn btn--danger" disabled={busy} onClick={stop}>{busy ? 'Stopping…' : 'Stop run'}</button>
           : <button className="btn btn--primary" disabled={busy} onClick={start}>{busy ? 'Starting…' : 'Start run'}</button>}
       </div>
-      <div style={{ marginTop: 10, fontSize: 'var(--text-xs)', color: 'var(--t-4)' }}>
-        Start commands the maker (<span className="mono">start-run H T</span>) and brackets this session so the
-        charts can overlay the board's estimate against what you commanded.
-      </div>
+      <p style={{ fontSize: 'var(--text-md)', color: 'var(--t-3)', marginTop: 16, marginBottom: 0 }}>
+        Start commands the maker (<span className="mono">start-run H T</span>) and brackets this session so
+        the charts can overlay the board's estimate against what you commanded.
+      </p>
     </div>
   );
 }
@@ -360,21 +506,22 @@ function ackMatches(ack, key, cmd) {
   return c === cmd || (c.indexOf('set-param') !== -1 && c.indexOf(key) !== -1);
 }
 
-function ParamRow({ label, keyName, current, control, pending, onSet }) {
+function WtParam({ label, keyname, boardVal, control, pending, onSet, tip }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 10, alignItems: 'center',
-                  padding: '8px 0', borderBottom: '1px solid var(--hair-1)' }}>
-      <div>
-        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--t-2)' }}>{label}</div>
-        <div className="mono" style={{ fontSize: 'var(--text-xs)', color: 'var(--t-4)' }}>
-          board: {current == null ? '—' : current}
+    <div className="wt-param">
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 'var(--text-base)', color: 'var(--t-1)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span>{label} <span className="mono" style={{ color: 'var(--t-4)', fontSize: 'var(--text-xs)' }}>({keyname})</span></span>
+          {tip && <WtInfo tip={tip} />}
+        </div>
+        <div className="mono" style={{ fontSize: 'var(--text-xs)', color: 'var(--t-3)', marginTop: 2 }}>
+          board: <span style={{ color: 'var(--t-2)' }}>{boardVal == null ? '—' : boardVal}</span>
         </div>
       </div>
+      <span style={{ flex: 1 }} />
       {control}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        {pending && <span className="pill neutral"><span className="dot" style={{ animation: 'pulseDot 1.2s infinite' }} />pending</span>}
-        <button className="btn btn--sm" onClick={onSet}>Set</button>
-      </div>
+      {pending && <span className="pill neutral"><span className="dot" style={{ animation: 'pulseDot 1.2s infinite' }} />pending</span>}
+      <button className="btn btn--sm" onClick={onSet}>Set</button>
     </div>
   );
 }
@@ -411,40 +558,45 @@ function ParamPanel({ drifter, reading, acks }) {
     await API.sendWaveCommand(drifter, cmd);
   };
 
-  const selStyle = {
-    background: 'var(--bg-1)', color: 'var(--t-1)', border: '1px solid var(--hair-2)',
-    borderRadius: 'var(--r-2)', padding: '6px 8px', fontFamily: "'JetBrains Mono', monospace",
-    fontSize: 'var(--text-sm)',
-  };
-  const numStyle = { ...selStyle, width: 82 };
-
   const recent = acks.slice(-8).reverse();
   return (
     <div className="card">
       <span className="eyebrow">Board params · retune the on-board estimator live</span>
-      <div style={{ marginTop: 10 }}>
-        <ParamRow label="FFT window (wave_n)" keyName="wave_n" current={cur.wave_n}
-                  pending={!!pending.wave_n} onSet={() => doSet('wave_n', waveN)}
-                  control={<select value={waveN} onChange={e => setWaveN(+e.target.value)} style={selStyle}>
-                    {WAVE_N_OPTS.map(n => <option key={n} value={n}>{n}</option>)}</select>} />
-        <ParamRow label="Tp median taps (tp_n)" keyName="tp_n" current={cur.tp_n}
-                  pending={!!pending.tp_n} onSet={() => doSet('tp_n', tpN)}
-                  control={<select value={tpN} onChange={e => setTpN(+e.target.value)} style={selStyle}>
-                    {TP_N_OPTS.map(n => <option key={n} value={n}>{n}</option>)}</select>} />
-        <ParamRow label="Min prominence (prom_min)" keyName="prom_min" current={cur.prom_min}
-                  pending={!!pending.prom_min} onSet={() => doSet('prom_min', promMin)}
-                  control={<input type="number" step="0.01" placeholder={cur.prom_min != null ? String(cur.prom_min) : ''}
-                    value={promMin} onChange={e => setPromMin(e.target.value)} style={numStyle} />} />
-        <ParamRow label="Band low (flo, Hz)" keyName="flo" current={cur.flo}
-                  pending={!!pending.flo} onSet={() => doSet('flo', flo)}
-                  control={<input type="number" step="0.01" placeholder={cur.flo != null ? String(cur.flo) : ''}
-                    value={flo} onChange={e => setFlo(e.target.value)} style={numStyle} />} />
-        <ParamRow label="Band high (fhi, Hz)" keyName="fhi" current={cur.fhi}
-                  pending={!!pending.fhi} onSet={() => doSet('fhi', fhi)}
-                  control={<input type="number" step="0.01" placeholder={cur.fhi != null ? String(cur.fhi) : ''}
-                    value={fhi} onChange={e => setFhi(e.target.value)} style={numStyle} />} />
+      <div style={{ marginTop: 8 }}>
+        <WtParam label="FFT window" keyname="wave_n" boardVal={cur.wave_n}
+          pending={!!pending.wave_n} onSet={() => doSet('wave_n', waveN)}
+          tip="Number of samples per FFT. Larger windows give finer frequency (period) resolution but respond more slowly to change."
+          control={
+            <select className="cam-res mono" value={waveN} onChange={e => setWaveN(+e.target.value)}>
+              {WAVE_N_OPTS.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>} />
+        <WtParam label="Tp median taps" keyname="tp_n" boardVal={cur.tp_n}
+          pending={!!pending.tp_n} onSet={() => doSet('tp_n', tpN)}
+          tip="Length of the median filter smoothing the peak-period output. More taps steadies Tp but adds lag."
+          control={
+            <select className="cam-res mono" value={tpN} onChange={e => setTpN(+e.target.value)}>
+              {TP_N_OPTS.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>} />
+        <WtParam label="Min prominence" keyname="prom_min" boardVal={cur.prom_min}
+          pending={!!pending.prom_min} onSet={() => doSet('prom_min', promMin)}
+          tip="Gate on spectral peak strength. A peak weaker than this is ignored and Tp reads 0 — raise it to reject noise, lower it to lock onto faint swell."
+          control={<input className="wt-num mono" type="text" inputMode="decimal"
+                          placeholder={cur.prom_min != null ? String(cur.prom_min) : ''}
+                          value={promMin} onChange={e => setPromMin(e.target.value)} />} />
+        <WtParam label="Band low" keyname="flo, Hz" boardVal={cur.flo}
+          pending={!!pending.flo} onSet={() => doSet('flo', flo)}
+          tip="Low edge of the band-pass, in hertz. Frequencies below this are discarded — trims drift and slow tilt."
+          control={<input className="wt-num mono" type="text" inputMode="decimal"
+                          placeholder={cur.flo != null ? String(cur.flo) : ''}
+                          value={flo} onChange={e => setFlo(e.target.value)} />} />
+        <WtParam label="Band high" keyname="fhi, Hz" boardVal={cur.fhi}
+          pending={!!pending.fhi} onSet={() => doSet('fhi', fhi)}
+          tip="High edge of the band-pass, in hertz. Frequencies above this are discarded — rejects chop and sensor noise."
+          control={<input className="wt-num mono" type="text" inputMode="decimal"
+                          placeholder={cur.fhi != null ? String(cur.fhi) : ''}
+                          value={fhi} onChange={e => setFhi(e.target.value)} />} />
       </div>
-      <div style={{ marginTop: 12 }}>
+      <div style={{ marginTop: 18 }}>
         <span className="eyebrow">Ack log</span>
         <div style={{ marginTop: 6, maxHeight: 132, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3 }}>
           {recent.length === 0
@@ -458,55 +610,6 @@ function ParamPanel({ drifter, reading, acks }) {
               ))}
         </div>
       </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────
-// HEALTH STRIP — board presence + link/power/estimator health
-// ─────────────────────────────────────────────────────────────
-function HealthTile({ label, value, tone }) {
-  return (
-    <div style={{ flex: '1 1 90px', minWidth: 90, background: 'var(--bg-1)', border: '1px solid var(--hair-1)',
-                  borderRadius: 6, padding: '9px 11px' }}>
-      <div style={{ fontSize: 'var(--text-2xs)', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--t-4)' }}>{label}</div>
-      <div className="mono" style={{ fontSize: 'var(--text-lg)', color: tone || 'var(--t-1)', marginTop: 3, whiteSpace: 'nowrap' }}>{value}</div>
-    </div>
-  );
-}
-
-function HealthStrip({ reading, connected, lastTs, now }) {
-  const r = reading || {};
-  const age = lastTs ? Math.max(0, now - lastTs) : null;
-  const promLow = typeof r.prom === 'number' && typeof r.prom_min === 'number' && r.prom < r.prom_min;
-  const verdict = SARG_VERDICT[r.sarg ? r.sarg.c : undefined] || { label: '—', cls: 'neutral' };
-  return (
-    <div className="card" style={{ marginBottom: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
-        <span className={`pill ${connected ? 'green' : 'wine'}`}>
-          <span className="dot" style={connected ? { animation: 'pulseDot 1.6s infinite' } : {}} />
-          board {connected ? 'connected' : 'offline'}
-        </span>
-        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--t-3)' }}>
-          {age == null ? 'no frame yet' : `last frame ${age.toFixed(0)}s ago`}
-        </span>
-        <span style={{ flex: 1 }} />
-        <span className={`pill ${verdict.cls}`}><span className="dot" />{verdict.label}</span>
-      </div>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <HealthTile label="Fill" value={r.fill != null ? `${(r.fill * 100).toFixed(0)}%` : '—'} />
-        <HealthTile label="Prominence" tone={promLow ? 'var(--wine-text)' : undefined}
-                    value={r.prom != null ? `${r.prom.toFixed(2)} / ${r.prom_min != null ? r.prom_min : '—'}` : '—'} />
-        <HealthTile label="RSSI" value={r.rssi != null ? `${r.rssi} dBm` : '—'} />
-        <HealthTile label="Heap" value={r.heap != null ? `${(r.heap / 1024).toFixed(0)}k` : '—'} />
-        <HealthTile label="Battery" value={r.batt_mv != null ? `${(r.batt_mv / 1000).toFixed(2)}V` : '—'} />
-      </div>
-      {promLow && (
-        <div style={{ marginTop: 9, fontSize: 'var(--text-xs)', color: 'var(--wine-text)', display: 'flex', gap: 6 }}>
-          <span style={{ color: 'var(--wine)' }}>▲</span>
-          Prominence is below the gate — the peak is too weak to lock a period, so Tp reads 0 (gapped above).
-        </div>
-      )}
     </div>
   );
 }
@@ -538,10 +641,10 @@ function WaveTankTab({ drifter }) {
           </span>
         )}
       </div>
-      <HealthStrip reading={latest} connected={connected} lastTs={lastTs} now={now} />
+      <StatusHealth reading={latest} connected={connected} lastTs={lastTs} now={now} />
       <HeaveStrip samples={heave} />
       <HsTpChart readings={readings} runs={runs} now={now} />
-      <div className="grid-2">
+      <div className="grid-2" style={{ gridTemplateColumns: '0.9fr 1.1fr' }}>
         <RunPanel drifter={drifter} runs={runs} onChanged={refreshRuns} />
         <ParamPanel drifter={drifter} reading={latest} acks={acks} />
       </div>

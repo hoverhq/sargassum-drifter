@@ -178,6 +178,107 @@
   /* model registry rows */
   .model-row { display:grid; grid-template-columns:92px 130px 84px 1fr auto; gap:12px; align-items:center; }
   @media (max-width:720px){ .model-row { grid-template-columns:1fr auto; row-gap:8px; } }
+
+  /* ── camera scene (select styling reused by wave-tank param dropdowns) ── */
+  .cam-res {
+    background:var(--bg-3); color:var(--t-1);
+    border:1px solid var(--hair-2); border-radius:var(--r-2);
+    font-size:var(--text-base); padding:8px 12px;
+    font-family:'JetBrains Mono', ui-monospace, monospace;
+  }
+  .cam-res:hover { border-color:var(--hair-3); }
+
+  /* ── wave tank scene ── */
+  .wt-stats { display:grid; grid-template-columns:repeat(5, 1fr); gap:12px; margin-top:14px; }
+  @media (max-width:860px){ .wt-stats { grid-template-columns:repeat(2, 1fr); } }
+  .wt-stat {
+    background:var(--bg-1); border:1px solid var(--hair-1);
+    border-radius:var(--r-2); padding:12px 14px;
+    display:flex; flex-direction:column; gap:6px;
+  }
+  .wt-stat__v { font-size:var(--text-2xl); color:var(--t-1); }
+  .wt-stat[data-tone="warn"] .wt-stat__v { color:var(--wine-text); }
+  .wt-warn {
+    display:flex; gap:8px; align-items:baseline;
+    margin-top:12px; font-size:var(--text-md); color:var(--wine-text);
+  }
+  .wt-legend { font-size:var(--text-xs); color:var(--t-3); display:inline-flex; align-items:center; gap:6px; margin-left:14px; }
+  .wt-li { width:18px; height:0; border-top:2px solid var(--sage); display:inline-block; }
+  .wt-li--est { border-top-color:var(--sage); }
+  .wt-li--cmd { border-top-style:dashed; border-top-color:var(--olive); }
+  .wt-axis { display:flex; flex-direction:column; justify-content:space-between; align-items:flex-end; font-size:var(--text-xs); color:var(--t-4); padding:0 0 2px; }
+  .wt-xaxis { display:flex; justify-content:space-between; font-size:var(--text-xs); color:var(--t-4); margin-top:6px; }
+  .wt-field { display:flex; flex-direction:column; gap:6px; }
+  .wt-field span { font-size:var(--text-sm); color:var(--t-2); }
+  .wt-field input, .wt-num {
+    background:var(--bg-1); color:var(--t-1);
+    border:1px solid var(--hair-2); border-radius:var(--r-2);
+    padding:9px 12px; font-size:var(--text-base); width:96px;
+  }
+  .wt-field input:disabled { opacity:0.5; }
+  .wt-field input:focus, .wt-num:focus { outline:none; border-color:var(--olive-dim); }
+  .wt-num { width:84px; }
+  .wt-param { display:flex; align-items:center; gap:10px; padding:11px 0; border-top:1px solid var(--hair-1); }
+  .wt-param:first-child { border-top:0; }
+  .wt-info {
+    display:inline-flex; align-items:center; justify-content:center;
+    width:15px; height:15px; border-radius:50%; flex:none;
+    border:1px solid var(--hair-3); color:var(--t-3);
+    font-size:9px; font-style:italic; font-family:'JetBrains Mono',monospace;
+    cursor:help; position:relative; vertical-align:middle;
+  }
+  .wt-info:hover, .wt-info:focus { color:var(--t-1); border-color:var(--olive-dim); outline:none; }
+  .wt-info__pop {
+    position:absolute; bottom:calc(100% + 8px); left:50%; transform:translateX(-50%);
+    width:max-content; max-width:250px; text-align:left;
+    background:var(--bg-3); border:1px solid var(--hair-3);
+    border-radius:var(--r-2); padding:8px 11px;
+    font-size:var(--text-sm); font-style:normal; font-family:'Inter',sans-serif;
+    color:var(--t-2); line-height:1.5; letter-spacing:normal;
+    box-shadow:0 12px 30px rgba(0,0,0,0.6);
+    opacity:0; visibility:hidden; transition:opacity .12s; z-index:30; pointer-events:none;
+  }
+  .wt-info:hover .wt-info__pop, .wt-info:focus .wt-info__pop { opacity:1; visibility:visible; }
+  .wt-plot { position:relative; background:var(--bg-1); border-radius:var(--r-1); cursor:crosshair; }
+  .wt-cursor { position:absolute; top:0; bottom:0; width:1px; background:var(--hair-3); pointer-events:none; transform:translateX(-0.5px); }
+  .wt-dot {
+    position:absolute; width:9px; height:9px; border-radius:50%;
+    background:var(--sage); box-shadow:0 0 0 3px rgba(122,166,146,0.25), 0 0 0 1px var(--bg-page);
+    transform:translate(-50%,-50%); pointer-events:none;
+  }
+  .wt-tip {
+    position:absolute; pointer-events:none; z-index:5; min-width:150px;
+    background:var(--bg-3); border:1px solid var(--hair-3);
+    border-radius:var(--r-2); padding:9px 11px;
+    box-shadow:0 12px 30px rgba(0,0,0,0.55);
+  }
+  .wt-tip__t { font-size:var(--text-xs); color:var(--t-3); margin-bottom:6px; }
+  .wt-tip__row { display:flex; align-items:center; gap:7px; font-size:var(--text-sm); color:var(--t-2); }
+  .wt-tip__row + .wt-tip__row { margin-top:3px; }
+  .wt-tip__row b { margin-left:auto; color:var(--t-1); font-weight:500; }
+  .wt-rangebar { display:flex; align-items:center; gap:12px; margin-bottom:6px; }
+  .wt-custom { display:inline-flex; align-items:center; gap:6px; color:var(--t-3); font-size:var(--text-xs); }
+  .wt-custom input {
+    width:56px; background:var(--bg-1); color:var(--t-1);
+    border:1px solid var(--hair-2); border-radius:var(--r-2);
+    padding:5px 8px; font-size:var(--text-sm);
+  }
+  .wt-custom input:focus { outline:none; border-color:var(--olive-dim); }
+
+  /* ── segmented control (design's .scn), reused by the wave-tank time-range tabs ── */
+  .scn {
+    display:flex; align-items:center; gap:0;
+    background:var(--bg-1); border:1px solid var(--hair-2);
+    border-radius:var(--r-2); padding:3px; flex-wrap:wrap;
+  }
+  .scn button {
+    border:0; background:transparent; color:var(--t-3);
+    font-size:var(--text-xs); font-weight:500;
+    padding:5px 9px; border-radius:var(--r-1);
+    transition:all .12s; white-space:nowrap;
+  }
+  .scn button:hover { color:var(--t-1); }
+  .scn button.on { background:var(--bg-3); color:var(--olive); box-shadow:inset 0 0 0 1px var(--hair-3); }
 </style>
 </head>
 <body>
