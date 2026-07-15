@@ -39,6 +39,14 @@ CREATE TABLE IF NOT EXISTS photos (
   res TEXT, width INTEGER, height INTEGER, bytes INTEGER, ok INTEGER NOT NULL,
   path TEXT, thumb_path TEXT, created REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_photos ON photos(drifter, id);
+CREATE TABLE IF NOT EXISTS wave_readings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, drifter TEXT NOT NULL, ts REAL NOT NULL,
+  hs_mm INTEGER, tp_ds INTEGER, raw TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_wave_readings ON wave_readings(drifter, ts);
+CREATE TABLE IF NOT EXISTS wave_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, drifter TEXT NOT NULL,
+  h_mm INTEGER NOT NULL, t_ds INTEGER NOT NULL, note TEXT DEFAULT '',
+  started_ts REAL NOT NULL, stopped_ts REAL, board_ack TEXT DEFAULT '');
 """
 
 
@@ -251,3 +259,51 @@ class Store:
         return [{"ts": ts, "state": st, "proba": p, "features": json.loads(f or "[]"),
                  "saturated": bool(sat), "battery": batt, "battery_mv": bmv}
                 for ts, st, p, f, sat, batt, bmv in reversed(rows)]
+
+    # ── wave-tank telemetry: a bench rig drives a physical wave maker at a set height/period and the
+    # board reports back significant-wave-height/period readings; runs bracket a bench session so the
+    # dashboard can align readings against the commanded target. ──
+    def add_wave_reading(self, drifter, hs_mm, tp_ds, raw_json):
+        with self._lock:
+            ts = time.time()
+            self.db.execute(
+                "INSERT INTO wave_readings(drifter,ts,hs_mm,tp_ds,raw) VALUES(?,?,?,?,?)",
+                (drifter, ts, hs_mm, tp_ds, raw_json))
+            self.db.commit()
+            return ts
+
+    def recent_wave_readings(self, drifter, since=0.0, limit=1800):
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT ts,hs_mm,tp_ds,raw FROM wave_readings WHERE drifter=? AND ts>? "
+                "ORDER BY rowid ASC LIMIT ?", (drifter, since, limit)).fetchall()
+        return [{"ts": ts, "hs_mm": hs_mm, "tp_ds": tp_ds, "raw": json.loads(raw)}
+                for ts, hs_mm, tp_ds, raw in rows]
+
+    def start_wave_run(self, drifter, h_mm, t_ds, note=""):
+        with self._lock:
+            cur = self.db.execute(
+                "INSERT INTO wave_runs(drifter,h_mm,t_ds,note,started_ts) VALUES(?,?,?,?,?)",
+                (drifter, h_mm, t_ds, note, time.time()))
+            self.db.commit()
+            return cur.lastrowid
+
+    def stop_wave_run(self, drifter):
+        with self._lock:
+            row = self.db.execute(
+                "SELECT id FROM wave_runs WHERE drifter=? AND stopped_ts IS NULL "
+                "ORDER BY id DESC LIMIT 1", (drifter,)).fetchone()
+            if not row:
+                return False
+            self.db.execute("UPDATE wave_runs SET stopped_ts=? WHERE id=?", (time.time(), row[0]))
+            self.db.commit()
+            return True
+
+    def list_wave_runs(self, drifter):
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT id,h_mm,t_ds,note,started_ts,stopped_ts,board_ack FROM wave_runs "
+                "WHERE drifter=? ORDER BY id DESC", (drifter,)).fetchall()
+        return [{"id": i, "h_mm": h, "t_ds": t, "note": note, "started_ts": started,
+                 "stopped_ts": stopped, "board_ack": ack}
+                for i, h, t, note, started, stopped, ack in rows]

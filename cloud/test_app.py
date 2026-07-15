@@ -5,8 +5,10 @@ TestClient — ingest readings + labels, one-click train yields a servable model
 detections, dashboard data. Uses synthetic streams so the loop is exercised end to end without the board.
 """
 import io
+import json
 import os
 import tempfile
+import time
 
 os.environ["SARG_DB"] = tempfile.mktemp(suffix=".db")
 os.environ["SARG_PHOTO_DIR"] = tempfile.mkdtemp(prefix="sargphotos-")
@@ -14,6 +16,7 @@ os.environ["SARG_TOKEN"] = "testtok"
 
 from fastapi.testclient import TestClient  # noqa: E402
 import app as appmod  # noqa: E402
+from store import Store  # noqa: E402
 from synthetic import stream  # noqa: E402
 
 client = TestClient(appmod.app)
@@ -199,3 +202,36 @@ def test_train_too_few_labels_422():
     client.post("/readings", json={"drifter": "sparse", "ts": 1, "rgb": [[100, 300, 100]] * 4}, headers=H)
     r = client.post("/train?drifter=sparse", headers=H)
     assert r.status_code == 422 and "few" in r.json()["detail"].lower()
+
+
+# ── wave-tank store: readings + run lifecycle, exercised against a fresh, isolated Store (not the
+# shared app-level one) so it doesn't collide with the drifter names used by the API tests above. ──
+def test_wave_store_readings_ascending_and_since_filter():
+    s = Store(tempfile.mktemp(suffix=".db"))
+    d = "wavetest"
+    ts1 = s.add_wave_reading(d, 120, 45, json.dumps({"sample": 1}))
+    time.sleep(0.001)
+    ts2 = s.add_wave_reading(d, 130, 46, json.dumps({"sample": 2}))
+    time.sleep(0.001)
+    ts3 = s.add_wave_reading(d, 140, 47, json.dumps({"sample": 3}))
+
+    rows = s.recent_wave_readings(d)
+    assert [r["ts"] for r in rows] == [ts1, ts2, ts3]  # ascending
+    assert rows[0]["hs_mm"] == 120 and rows[0]["tp_ds"] == 45 and rows[0]["raw"] == {"sample": 1}
+
+    since_rows = s.recent_wave_readings(d, since=ts1)
+    assert [r["ts"] for r in since_rows] == [ts2, ts3]  # ts1 itself excluded
+
+
+def test_wave_store_run_lifecycle():
+    s = Store(tempfile.mktemp(suffix=".db"))
+    d = "wavetest"
+    rid = s.start_wave_run(d, 150, 60, note="calibration")
+    runs = s.list_wave_runs(d)
+    assert len(runs) == 1 and runs[0]["id"] == rid and runs[0]["stopped_ts"] is None
+
+    assert s.stop_wave_run(d) is True
+    runs2 = s.list_wave_runs(d)
+    assert runs2[0]["stopped_ts"] is not None
+
+    assert s.stop_wave_run(d) is False  # no open run left
