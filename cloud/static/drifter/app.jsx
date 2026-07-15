@@ -270,7 +270,7 @@ function App() {
         <LastSeen wall={lastDataWall} nowMs={nowMs} />
         <BatteryPill battery={battery} />
         <nav style={{ display: 'flex', gap: 6, marginLeft: 14 }}>
-          {[['console', 'Console'], ['camera', 'Camera']].map(([id, label]) => (
+          {[['console', 'Console'], ['camera', 'Camera'], ['wavetank', 'Wave Tank']].map(([id, label]) => (
             <button key={id} className={`btn btn--sm ${tab === id ? 'btn--primary' : 'btn--ghost'}`}
                     onClick={() => setTab(id)}>{label}</button>
           ))}
@@ -278,6 +278,8 @@ function App() {
       </header>
 
       {tab === 'camera' && <CameraTab drifter={drifter} />}
+
+      {tab === 'wavetank' && <WaveTankTab drifter={drifter} />}
 
       {tab === 'console' && (<>
       {/* ZONE 1 — live now */}

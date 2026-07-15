@@ -67,9 +67,47 @@ const API = (() => {
     return r.ok ? r.json() : [];
   }
 
+  // ── wave-tank bench rig ──
+  // Live telemetry rides the /ws/ui WebSocket (opened by wavetank.jsx). These REST calls seed history on
+  // mount and drive the bench: a run brackets a session at a commanded height/period, params retune the
+  // board's on-board wave estimator remotely.
+  async function getWaveReadings(drifter, since) {
+    const r = await fetch(`/api/wave-readings?${qs({ drifter, since })}`, { headers: authHeaders() });
+    return r.ok ? r.json() : [];
+  }
+  async function getWaveRuns(drifter) {
+    const r = await fetch(`/api/wave-runs?${qs({ drifter })}`, { headers: authHeaders() });
+    return r.ok ? r.json() : [];
+  }
+  async function startWaveRun(drifter, hMm, tDs) {
+    const r = await fetch('/api/wave-run', {
+      method: 'POST', headers: jsonHeaders(),
+      body: JSON.stringify({ drifter, h_mm: hMm, t_ds: tDs }),
+    });
+    const j = await r.json().catch(() => ({}));
+    return { ok: r.ok, ...j };
+  }
+  async function stopWaveRun(drifter) {
+    const r = await fetch('/api/wave-run/stop', {
+      method: 'POST', headers: jsonHeaders(),
+      body: JSON.stringify({ drifter }),
+    });
+    const j = await r.json().catch(() => ({}));
+    return { ok: r.ok, ...j };
+  }
+  async function sendWaveCommand(drifter, cmd) {
+    const r = await fetch('/api/wave-command', {
+      method: 'POST', headers: jsonHeaders(),
+      body: JSON.stringify({ drifter, cmd }),
+    });
+    const j = await r.json().catch(() => ({}));
+    return { ok: r.ok, ...j };
+  }
+
   return {
     getReadings, getDetections, getLabels, postLabel, deleteLabel, clearLabels,
     postTrain, postPush, getModels, patchModelNote, postCaptureRequest, getPhotos,
+    getWaveReadings, getWaveRuns, startWaveRun, stopWaveRun, sendWaveCommand,
   };
 })();
 
