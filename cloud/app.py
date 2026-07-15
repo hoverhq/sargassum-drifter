@@ -82,6 +82,10 @@ async def ws_board(websocket: WebSocket, drifter: str):
         return
     await websocket.accept()
     hub.boards[drifter] = websocket
+    # symmetric with the disconnect broadcast below -- the normal sequence is operator opens the
+    # dashboard first, board powers on later, so the UI needs to learn about a LATE connect too
+    # (it can't just infer connectivity from the first reading).
+    await hub.to_ui(drifter, json.dumps({"type": "board", "connected": True}))
     for cmd in hub.pending.pop(drifter, []):  # flush anything queued while this board was offline
         try:
             await websocket.send_text(json.dumps({"type": "cmd", "cmd": cmd}))

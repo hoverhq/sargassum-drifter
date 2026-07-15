@@ -262,6 +262,9 @@ def test_wave_ws_reading_stored_and_fanned_with_server_ts():
         assert snap == {"type": "board", "connected": False}  # no board yet
 
         with client.websocket_connect(f"/ws/board?drifter={d}", headers=H) as board_ws:
+            presence_on = ui_ws.receive_json()  # board connect broadcasts presence:true to open UI sockets
+            assert presence_on == {"type": "board", "connected": True}
+
             board_ws.send_text(json.dumps({"type": "reading", "drifter": d, "hs_mm": 120, "tp_ds": 45}))
             fwd = ui_ws.receive_json()
             assert fwd["type"] == "reading" and fwd["hs_mm"] == 120 and fwd["tp_ds"] == 45
@@ -272,6 +275,29 @@ def test_wave_ws_reading_stored_and_fanned_with_server_ts():
 
     readings = client.get(f"/api/wave-readings?drifter={d}", headers=H).json()
     assert len(readings) == 1 and readings[0]["hs_mm"] == 120 and readings[0]["tp_ds"] == 45
+
+
+def test_wave_ws_server_ts_overrides_board_ts():
+    d = "wavespoof"
+    with client.websocket_connect(f"/ws/ui?drifter={d}&token=testtok") as ui_ws:
+        snap = ui_ws.receive_json()
+        assert snap == {"type": "board", "connected": False}  # no board yet
+
+        with client.websocket_connect(f"/ws/board?drifter={d}", headers=H) as board_ws:
+            presence_on = ui_ws.receive_json()
+            assert presence_on == {"type": "board", "connected": True}
+
+            # board sends a reading with a bogus, deliberately-wrong ts -- the untrusted board clock
+            # must never be plotted; only the server's own receipt time should reach the UI
+            board_ws.send_text(json.dumps({"type": "reading", "drifter": d, "hs_mm": 100, "tp_ds": 40,
+                                            "ts": 1.0}))
+            fwd = ui_ws.receive_json()
+            assert fwd["type"] == "reading" and fwd["hs_mm"] == 100 and fwd["tp_ds"] == 40
+            assert fwd["ts"] != 1.0     # server value won, not the board-supplied one
+            assert fwd["ts"] > 1e9      # a real epoch, not the spoofed value
+
+        presence = ui_ws.receive_json()  # board disconnect broadcasts presence:false to open UI sockets
+        assert presence == {"type": "board", "connected": False}
 
 
 def test_wave_ws_command_pends_then_flushes_on_board_connect():
