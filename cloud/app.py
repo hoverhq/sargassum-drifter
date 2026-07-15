@@ -14,6 +14,7 @@ Run: SARG_TOKEN=... uvicorn app:app --host 0.0.0.0 --port 8000
 import io
 import json
 import os
+import time
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -331,7 +332,10 @@ async def post_capture_request(drifter: str, req: Request, authorization: str = 
 async def post_photo(req: Request, authorization: str = Header(None)):
     _auth(authorization)
     drifter = req.headers.get("X-Drifter", "drifter1")
-    ts = float(req.headers.get("X-Ts", "0") or 0)
+    # Server-stamps ts at receipt when the poster carries no clock (the beacon sends no X-Ts; board
+    # clocks are untrusted anyway, same policy as wave_readings). Also keeps the filename stem unique --
+    # the old fallback stem was the byte-length, which collides across same-sized JPEGs.
+    ts = float(req.headers.get("X-Ts", "0") or 0) or time.time()
     res = req.headers.get("X-Res", "")
     if req.headers.get("X-Capture-Error"):
         store.add_photo(drifter, ts, res, 0, 0, 0, False, None, None)

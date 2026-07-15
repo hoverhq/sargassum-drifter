@@ -136,6 +136,20 @@ def test_photo_upload_thumbnail_and_serve():
     assert thumb.status_code == 200 and thumb.content[:2] == b"\xff\xd8"
 
 
+def test_photo_without_ts_gets_server_stamped():
+    # The beacon posts no X-Ts (its clock is untrusted); the server must stamp receipt time so the
+    # Camera tab sorts it as new instead of epoch-0, and the filename stem stays unique.
+    import time as _t
+    d = "camnots"
+    before = _t.time()
+    r = client.post("/photos", content=_tiny_jpeg(), headers={**H, "Content-Type": "image/jpeg",
+                    "X-Drifter": d, "X-Res": "5MP"})
+    assert r.status_code == 200, r.text
+    lst = client.get("/api/photos?drifter=" + d, headers=H).json()
+    assert len(lst) == 1 and lst[0]["ok"]
+    assert before - 1 <= lst[0]["ts"] <= _t.time() + 1
+
+
 def test_capture_error_marks_failed_row():
     d = "camerr"
     r = client.post("/photos", content=b"", headers={**H, "X-Drifter": d, "X-Ts": "5.0",
