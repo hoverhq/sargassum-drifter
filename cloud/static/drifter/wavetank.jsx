@@ -418,7 +418,7 @@ function StatusHealth({ reading, connected, lastTs, now }) {
         <span className={`pill ${verdict.cls}`}><span className="dot" />{verdict.label}</span>
       </div>
       <div className="wt-stats">
-        <WtStat label="Fill">{r.fill != null ? `${(r.fill * 100).toFixed(0)}%` : '—'}</WtStat>
+        <WtStat label="Fill">{r.fill != null && r.wave_n ? `${Math.min(100, Math.round((r.fill / r.wave_n) * 100))}%` : '—'}</WtStat>
         <WtStat label="Prominence" tone={promLow ? 'warn' : ''}>
           {r.prom != null ? `${r.prom.toFixed(2)} / ${r.prom_min != null ? r.prom_min : '—'}` : '—'}
         </WtStat>
