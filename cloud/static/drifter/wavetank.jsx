@@ -337,6 +337,10 @@ function HsTpChart({ readings, runs, now }) {
   const [range, setRange] = useState('30m');
   const [customMin, setCustomMin] = useState('45');
   const sortedRuns = useMemo(() => [...runs].sort((a, b) => a.started_ts - b.started_ts), [runs]);
+  // Commanded (yellow) overlay + run-span shading show ONLY while a bench run is actively running —
+  // a run with no stopped_ts. Once you Stop the run, the ground-truth line clears. (Only one run is
+  // ever active at a time.)
+  const activeRuns = useMemo(() => sortedRuns.filter(r => r.stopped_ts == null), [sortedRuns]);
   const cm = parseFloat(customMin);
   const rangeMin = range === 'custom'
     ? (cm >= 1 ? cm : 30)                                  // guard: <1 or NaN → default 30
@@ -373,14 +377,14 @@ function HsTpChart({ readings, runs, now }) {
       </div>
       <ChartPanel label="Significant wave height (Hs)" unit="mm"
                   tip="The board's estimate of significant wave height, in millimetres. Solid line is what the board reports; the dashed line is the height you commanded from the maker. Watch how fast the estimate settles onto the commanded value."
-                  readings={visible} runs={sortedRuns} tMin={tMin} tMax={tMax} now={now} windowMin={rangeMin}
+                  readings={visible} runs={activeRuns} tMin={tMin} tMax={tMax} now={now} windowMin={rangeMin}
                   yMinFloor={10} fmt={v => v.toFixed(0)}
                   valueOf={r => (typeof r.hs_mm === 'number' ? r.hs_mm : null)}
                   truthOf={run => run.h_mm} />
       <div style={{ height: 1, background: 'var(--hair-1)', margin: '16px 0' }} />
       <ChartPanel label="Peak period (Tp)" unit="s"
                   tip="The dominant wave period the board locks onto, in seconds. It reads 0 (a gap) whenever the spectral peak is below the prominence gate — no confident period to report."
-                  readings={visible} runs={sortedRuns} tMin={tMin} tMax={tMax} now={now} windowMin={rangeMin}
+                  readings={visible} runs={activeRuns} tMin={tMin} tMax={tMax} now={now} windowMin={rangeMin}
                   yMinFloor={1} fmt={v => v.toFixed(1)}
                   valueOf={r => (r.tp_ds > 0 ? r.tp_ds / 10 : null)}
                   truthOf={run => (run.t_ds > 0 ? run.t_ds / 10 : null)} />
