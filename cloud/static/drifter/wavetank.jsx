@@ -216,7 +216,7 @@ function HeaveStrip({ samples }) {
 // Hs / Tp CHART — two stacked panels on a shared session-time x-axis
 // ─────────────────────────────────────────────────────────────
 const CHART_W = 1000;
-const RANGES = [['10m', 10], ['30m', 30], ['1h', 60]];
+const RANGES = [['3m', 3], ['10m', 10], ['30m', 30], ['1h', 60]];
 
 // Relative x-axis label for a "minutes back from now" tick (e.g. -30m). Integers render clean; a custom
 // fractional window keeps one decimal.
@@ -386,7 +386,7 @@ function ChartPanel({ label, unit, tip, readings, runs, tMin, tMax, now, windowM
 }
 
 function HsTpChart({ readings, runs, now, loadHistory }) {
-  const [range, setRange] = useState('30m');
+  const [range, setRange] = useState('3m');
   const [customMin, setCustomMin] = useState('45');
   // Affine height calibration, display-side only: H_cal = (Hs + offset) / slope. The board keeps
   // reporting RAW spectral Hs (never bake calibration into stored data); this maps it to a
@@ -409,7 +409,7 @@ function HsTpChart({ readings, runs, now, loadHistory }) {
   const cm = parseFloat(customMin);
   const rangeMin = range === 'custom'
     ? (cm >= 1 ? cm : 30)                                  // guard: <1 or NaN → default 30
-    : ({ '10m': 10, '30m': 30, '1h': 60 })[range];
+    : ({ '3m': 3, '10m': 10, '30m': 30, '1h': 60 })[range];
   // A wider window than is in memory pulls real history from the server (not just since-page-load).
   useEffect(() => {
     if (loadHistory) loadHistory(rangeMin);
