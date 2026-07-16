@@ -297,6 +297,19 @@ def test_wave_ws_board_rejects_bad_token():
     assert exc_info.value.code == 4401
 
 
+def test_wave_readings_limit_keeps_newest_rows():
+    # A window holding more rows than `limit` must return the NEWEST rows (still ascending) — with
+    # the old ASC+LIMIT the dashboard's "last hour" seed got the hour's OLDEST 15 minutes, so charts
+    # looked empty-since-reload. Exercised through the endpoint so the limit param is covered too.
+    d = "wavelim"
+    s = appmod.store
+    for i in range(10):
+        s.add_wave_reading(d, 100 + i, 20, json.dumps({"hs_mm": 100 + i}))
+    got = client.get(f"/api/wave-readings?drifter={d}&limit=3", headers=H).json()
+    assert [r["hs_mm"] for r in got] == [107, 108, 109], got  # newest 3, ascending
+    assert client.get(f"/api/wave-readings?drifter={d}", headers=H).json()[0]["hs_mm"] == 100
+
+
 def test_wave_ws_reading_stored_and_fanned_with_server_ts():
     d = "wavefan"
     with client.websocket_connect(f"/ws/ui?drifter={d}&token=testtok") as ui_ws:

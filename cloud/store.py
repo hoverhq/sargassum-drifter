@@ -287,13 +287,16 @@ class Store:
             self.db.commit()
             return ts
 
-    def recent_wave_readings(self, drifter, since=0.0, limit=1800):
+    def recent_wave_readings(self, drifter, since=0.0, limit=7200):
+        # Take the NEWEST rows in the window (DESC + reverse), not the oldest: with ASC, a window
+        # holding more rows than `limit` returned its oldest chunk — a dashboard asking for "the last
+        # hour" got the hour's first 15 minutes and nothing current (charts looked empty-since-reload).
         with self._lock:
             rows = self.db.execute(
                 "SELECT ts,hs_mm,tp_ds,raw FROM wave_readings WHERE drifter=? AND ts>? "
-                "ORDER BY rowid ASC LIMIT ?", (drifter, since, limit)).fetchall()
+                "ORDER BY rowid DESC LIMIT ?", (drifter, since, limit)).fetchall()
         return [{"ts": ts, "hs_mm": hs_mm, "tp_ds": tp_ds, "raw": json.loads(raw)}
-                for ts, hs_mm, tp_ds, raw in rows]
+                for ts, hs_mm, tp_ds, raw in reversed(rows)]
 
     def start_wave_run(self, drifter, h_mm, t_ds, note=""):
         with self._lock:

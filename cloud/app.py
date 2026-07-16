@@ -161,9 +161,13 @@ async def ws_ui(websocket: WebSocket, drifter: str, token: str = None):
 
 
 @app.get("/api/wave-readings")
-def api_wave_readings(drifter: str, since: float = 0.0, authorization: str = Header(None)):
+def api_wave_readings(drifter: str, since: float = 0.0, limit: int = 7200,
+                      authorization: str = Header(None)):
     _auth(authorization)
-    return JSONResponse(store.recent_wave_readings(drifter, since=since))
+    # limit is caller-tunable so the dashboard can load wide historical windows (a 4h custom range
+    # at 2Hz is ~28800 rows); clamped so a bad value can't dump the whole table.
+    limit = max(1, min(int(limit), 50000))
+    return JSONResponse(store.recent_wave_readings(drifter, since=since, limit=limit))
 
 
 @app.get("/api/wave-runs")

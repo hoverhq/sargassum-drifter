@@ -56,12 +56,36 @@ function useWaveSocket(drifter) {
   const [acks, setAcks] = useState([]);
   const wsRef = useRef(null);
 
+  // The readings cap grows when a wider history window is loaded (loadHistory below) — a fixed cap
+  // would let live appends immediately trim freshly-loaded history back down.
+  const capRef = useRef(READINGS_CAP);
+  const loadedSinceRef = useRef(Date.now() / 1000 - 3600); // seed fetch below covers the last hour
+
   const appendReading = useCallback((r) => {
-    setReadings(prev => ringPush(prev, r, READINGS_CAP));
+    setReadings(prev => ringPush(prev, r, capRef.current));
     if (Array.isArray(r.heave) && r.heave.length) {
       setHeave(prev => ringExtend(prev, r.heave, HEAVE_CAP));
     }
   }, []);
+
+  // Load older history on demand (the range selector asked for a wider window than is in memory).
+  // Fetches the whole window newest-first from the server, then splices any live frames that arrived
+  // during the fetch back on the end — so the charts show real history, not just since-page-load.
+  const loadHistory = useCallback(async (minutes) => {
+    const since = Date.now() / 1000 - minutes * 60;
+    if (since >= loadedSinceRef.current) return; // already loaded at least this far back
+    loadedSinceRef.current = since;
+    const cap = Math.ceil(minutes * 60 * 2 * 1.2) + 600; // 2 Hz + margin for cadence jitter
+    if (cap > capRef.current) capRef.current = cap;
+    const rows = await API.getWaveReadings(drifter, since, cap);
+    const norm = rows.map(normReading);
+    setReadings(prev => {
+      const lastTs = norm.length ? norm[norm.length - 1].ts : 0;
+      const newer = prev.filter(r => r.ts > lastTs);
+      const merged = norm.concat(newer);
+      return merged.length > capRef.current ? merged.slice(merged.length - capRef.current) : merged;
+    });
+  }, [drifter]);
 
   useEffect(() => {
     let closed = false;
@@ -133,7 +157,7 @@ function useWaveSocket(drifter) {
     setRuns(await API.getWaveRuns(drifter));
   }, [drifter]);
 
-  return { readings, heave, runs, connected, pending, acks, refreshRuns };
+  return { readings, heave, runs, connected, pending, acks, refreshRuns, loadHistory };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -343,7 +367,7 @@ function ChartPanel({ label, unit, tip, readings, runs, tMin, tMax, now, windowM
   );
 }
 
-function HsTpChart({ readings, runs, now }) {
+function HsTpChart({ readings, runs, now, loadHistory }) {
   const [range, setRange] = useState('30m');
   const [customMin, setCustomMin] = useState('45');
   const sortedRuns = useMemo(() => [...runs].sort((a, b) => a.started_ts - b.started_ts), [runs]);
@@ -355,6 +379,10 @@ function HsTpChart({ readings, runs, now }) {
   const rangeMin = range === 'custom'
     ? (cm >= 1 ? cm : 30)                                  // guard: <1 or NaN → default 30
     : ({ '10m': 10, '30m': 30, '1h': 60 })[range];
+  // A wider window than is in memory pulls real history from the server (not just since-page-load).
+  useEffect(() => {
+    if (loadHistory) loadHistory(rangeMin);
+  }, [rangeMin, loadHistory]);
   if (!readings.length) {
     return (
       <div className="card" style={{ textAlign: 'center', color: 'var(--t-3)', fontSize: 'var(--text-sm)', padding: '28px', marginBottom: 14 }}>
@@ -456,8 +484,19 @@ function StatusHealth({ reading, connected, lastTs, now }) {
 function RunPanel({ drifter, runs, onChanged }) {
   const [hMm, setHMm] = useState('120');
   const [tSec, setTSec] = useState('1.5');
-  const [busy, setBusy] = useState(false);
   const active = runs.find(r => r.stopped_ts == null);
+  // Mirror the ACTIVE run into the (disabled-while-running) inputs, wherever it was started from —
+  // this page, another tab, or the wave-command API. Without this the boxes sit on their hardcoded
+  // defaults (120/1.5) while the pill shows the truth, which reads as a contradiction — and those
+  // stale defaults have already produced one accidental mislabeled run via an untouched Start click.
+  // When the run stops, the fields stay editable holding its values as the seed for the next run.
+  useEffect(() => {
+    if (active) {
+      setHMm(String(active.h_mm));
+      setTSec(String(active.t_ds / 10));
+    }
+  }, [active && active.id]);
+  const [busy, setBusy] = useState(false);
 
   const start = async () => {
     const h = parseInt(hMm, 10);
@@ -639,7 +678,7 @@ function ParamPanel({ drifter, reading, acks }) {
 // TAB
 // ─────────────────────────────────────────────────────────────
 function WaveTankTab({ drifter }) {
-  const { readings, heave, runs, connected, pending, acks, refreshRuns } = useWaveSocket(drifter);
+  const { readings, heave, runs, connected, pending, acks, refreshRuns, loadHistory } = useWaveSocket(drifter);
   const [now, setNow] = useState(Date.now() / 1000);
 
   useEffect(() => {   // 1 s clock: run spans extend to "now" and the last-frame age counts up
@@ -664,7 +703,7 @@ function WaveTankTab({ drifter }) {
       </div>
       <StatusHealth reading={latest} connected={connected} lastTs={lastTs} now={now} />
       <HeaveStrip samples={heave} />
-      <HsTpChart readings={readings} runs={runs} now={now} />
+      <HsTpChart readings={readings} runs={runs} now={now} loadHistory={loadHistory} />
       <div className="grid-2" style={{ gridTemplateColumns: '0.9fr 1.1fr' }}>
         <RunPanel drifter={drifter} runs={runs} onChanged={refreshRuns} />
         <ParamPanel drifter={drifter} reading={latest} acks={acks} />

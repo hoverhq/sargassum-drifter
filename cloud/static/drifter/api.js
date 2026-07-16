@@ -76,8 +76,9 @@ const API = (() => {
   // Live telemetry rides the /ws/ui WebSocket (opened by wavetank.jsx). These REST calls seed history on
   // mount and drive the bench: a run brackets a session at a commanded height/period, params retune the
   // board's on-board wave estimator remotely.
-  async function getWaveReadings(drifter, since) {
-    const r = await fetch(`/api/wave-readings?${qs({ drifter, since })}`, { headers: authHeaders() });
+  async function getWaveReadings(drifter, since, limit) {
+    const params = limit ? { drifter, since, limit } : { drifter, since };
+    const r = await fetch(`/api/wave-readings?${qs(params)}`, { headers: authHeaders() });
     return r.ok ? r.json() : [];
   }
   async function getWaveRuns(drifter) {
