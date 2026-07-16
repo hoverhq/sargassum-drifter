@@ -239,7 +239,7 @@ function fmtAgo(secAgo) {
 // board estimate as a gapped polyline (valueOf() returns null wherever there is no value — Tp==0 gated =
 // a GAP, NOT a plunge to zero). The x-axis maps the real server `ts`; hover snaps to the nearest reading
 // and reports both the board estimate and the commanded value at that instant.
-function ChartPanel({ label, unit, tip, readings, runs, tMin, tMax, now, windowMin, valueOf, truthOf, fmt, yMinFloor }) {
+function ChartPanel({ label, unit, tip, readings, runs, tMin, tMax, now, windowMin, valueOf, truthOf, fmt, yMinFloor, calValueOf, calLabel }) {
   const H = 180, padT = 12, padB = 10;
   const [hover, setHover] = useState(null);
 
@@ -247,22 +247,29 @@ function ChartPanel({ label, unit, tip, readings, runs, tMin, tMax, now, windowM
   const xOf = (ts) => ((ts - tMin) / span) * CHART_W;
   const cx = (x) => Math.max(0, Math.min(CHART_W, x));   // clamp run overlay to the visible window
 
-  // y-domain over both the board series and the commanded truth so neither clips.
+  // y-domain over the board series, the calibrated series, and the commanded truth so none clip.
   let vMax = yMinFloor;
   for (const r of readings) { const v = valueOf(r); if (v != null && v > vMax) vMax = v; }
+  if (calValueOf) for (const r of readings) { const v = calValueOf(r); if (v != null && v > vMax) vMax = v; }
   for (const run of runs) { const v = truthOf(run); if (v != null && v > vMax) vMax = v; }
   vMax = vMax * 1.15 || 1;
   const yOf = (v) => (H - padB) - (v / vMax) * (H - padT - padB);
 
-  // board series, broken into segments wherever valueOf() returns null.
-  const segs = [];
-  let cur = [];
-  for (const r of readings) {
-    const v = valueOf(r);
-    if (v == null) { if (cur.length) { segs.push(cur); cur = []; } continue; }
-    cur.push(`${xOf(r.ts).toFixed(1)},${yOf(v).toFixed(1)}`);
-  }
-  if (cur.length) segs.push(cur);
+  // a series (board estimate, or the calibrated map of it), broken into segments wherever the
+  // accessor returns null.
+  const segsOf = (accessor) => {
+    const out = [];
+    let run = [];
+    for (const r of readings) {
+      const v = accessor(r);
+      if (v == null) { if (run.length) { out.push(run); run = []; } continue; }
+      run.push(`${xOf(r.ts).toFixed(1)},${yOf(v).toFixed(1)}`);
+    }
+    if (run.length) out.push(run);
+    return out;
+  };
+  const segs = segsOf(valueOf);
+  const calSegs = calValueOf ? segsOf(calValueOf) : [];
 
   // commanded value active at a given server ts (the run whose span brackets it), or null.
   const commandedAt = (ts) => {
@@ -289,6 +296,7 @@ function ChartPanel({ label, unit, tip, readings, runs, tMin, tMax, now, windowM
       estVal,
       estYPct: estVal != null ? (yOf(estVal) / H) * 100 : null,
       cmdVal: commandedAt(best.ts),
+      calVal: calValueOf ? calValueOf(best) : null,
     });
   };
 
@@ -301,6 +309,7 @@ function ChartPanel({ label, unit, tip, readings, runs, tMin, tMax, now, windowM
         {tip && <WtInfo tip={tip} />}
         <span style={{ flex: 1 }} />
         <span className="wt-legend"><i className="wt-li wt-li--est" /> board estimate</span>
+        {calValueOf && <span className="wt-legend"><i className="wt-li wt-li--cal" /> {calLabel || 'calibrated'}</span>}
         <span className="wt-legend"><i className="wt-li wt-li--cmd" /> commanded</span>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '52px 1fr', gap: 8, marginTop: 8 }}>
@@ -338,6 +347,11 @@ function ChartPanel({ label, unit, tip, readings, runs, tMin, tMax, now, windowM
               ? <polyline key={i} points={seg.join(' ')} fill="none" stroke="var(--sage)" strokeWidth="1.6"
                           vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
               : <circle key={i} cx={seg[0].split(',')[0]} cy={seg[0].split(',')[1]} r="1.8" fill="var(--sage)" />)}
+            {/* calibrated series (the affine map of the estimate), gapped like the estimate */}
+            {calSegs.map((seg, i) => seg.length >= 2
+              ? <polyline key={'c' + i} points={seg.join(' ')} fill="none" stroke="var(--amber)" strokeWidth="1.6"
+                          vectorEffect="non-scaling-stroke" strokeLinejoin="round" opacity="0.9" />
+              : <circle key={'c' + i} cx={seg[0].split(',')[0]} cy={seg[0].split(',')[1]} r="1.8" fill="var(--amber)" />)}
           </svg>
           {hover && (
             <>
@@ -351,6 +365,10 @@ function ChartPanel({ label, unit, tip, readings, runs, tMin, tMax, now, windowM
                 <div className="wt-tip__t mono">{hover.agoLabel}</div>
                 <div className="wt-tip__row"><i className="wt-li wt-li--est" /><span>estimate</span>
                   <b className="mono">{hover.estVal != null ? `${fmt(hover.estVal)} ${unit}` : '—'}</b></div>
+                {calValueOf && (
+                  <div className="wt-tip__row"><i className="wt-li wt-li--cal" /><span>{calLabel || 'calibrated'}</span>
+                    <b className="mono">{hover.calVal != null ? `${fmt(hover.calVal)} ${unit}` : '—'}</b></div>
+                )}
                 <div className="wt-tip__row"><i className="wt-li wt-li--cmd" /><span>commanded</span>
                   <b className="mono">{hover.cmdVal != null ? `${fmt(hover.cmdVal)} ${unit}` : '—'}</b></div>
               </div>
@@ -370,6 +388,19 @@ function ChartPanel({ label, unit, tip, readings, runs, tMin, tMax, now, windowM
 function HsTpChart({ readings, runs, now, loadHistory }) {
   const [range, setRange] = useState('30m');
   const [customMin, setCustomMin] = useState('45');
+  // Affine height calibration, display-side only: H_cal = (Hs + offset) / slope. The board keeps
+  // reporting RAW spectral Hs (never bake calibration into stored data); this maps it to a
+  // crest-to-trough height comparable with the tank's measured/commanded H. Defaults from the
+  // 2026-07-16 tank height sweep (linear regime 10-25mm): Hs = 1.6·H − 7. Persisted per-browser.
+  const [calSlope, setCalSlope] = useState(() => localStorage.getItem('wt_cal_slope') || '1.6');
+  const [calOffset, setCalOffset] = useState(() => localStorage.getItem('wt_cal_offset') || '7');
+  useEffect(() => { localStorage.setItem('wt_cal_slope', calSlope); }, [calSlope]);
+  useEffect(() => { localStorage.setItem('wt_cal_offset', calOffset); }, [calOffset]);
+  const slope = parseFloat(calSlope), offset = parseFloat(calOffset);
+  const calOk = isFinite(slope) && slope > 0 && isFinite(offset);
+  const calHsOf = calOk
+    ? (r) => (typeof r.hs_mm === 'number' && r.hs_mm > 0 ? (r.hs_mm + offset) / slope : null)
+    : null;
   const sortedRuns = useMemo(() => [...runs].sort((a, b) => a.started_ts - b.started_ts), [runs]);
   // Commanded (yellow) overlay + run-span shading show ONLY while a bench run is actively running —
   // a run with no stopped_ts. Once you Stop the run, the ground-truth line clears. (Only one run is
@@ -412,13 +443,26 @@ function HsTpChart({ readings, runs, now, loadHistory }) {
             <span>min</span>
           </label>
         )}
+        <span style={{ flex: 1 }} />
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span className="eyebrow">Cal H = (Hs +</span>
+          <input className="mono" type="text" inputMode="decimal" value={calOffset}
+                 onChange={e => setCalOffset(e.target.value)}
+                 style={{ width: 44, textAlign: 'center' }} aria-label="calibration offset (mm)" />
+          <span className="eyebrow">) /</span>
+          <input className="mono" type="text" inputMode="decimal" value={calSlope}
+                 onChange={e => setCalSlope(e.target.value)}
+                 style={{ width: 44, textAlign: 'center' }} aria-label="calibration slope" />
+          <WtInfo tip="Display-side affine height calibration: the amber line maps the board's raw Hs to a crest-to-trough height, H = (Hs + offset) / slope. Fit from the height sweep (linear regime): Hs = 1.6·H − 7. The board's reported data stays raw; this only changes the chart." />
+        </span>
       </div>
       <ChartPanel label="Significant wave height (Hs)" unit="mm"
-                  tip="The board's estimate of significant wave height, in millimetres. Solid line is what the board reports; the dashed line is the height you commanded from the maker. Watch how fast the estimate settles onto the commanded value."
+                  tip="The board's estimate of significant wave height, in millimetres. Solid line is what the board reports; amber is the calibrated height (see the Cal H control); the dashed line is the height you commanded from the maker."
                   readings={visible} runs={activeRuns} tMin={tMin} tMax={tMax} now={now} windowMin={rangeMin}
                   yMinFloor={10} fmt={v => v.toFixed(0)}
                   valueOf={r => (typeof r.hs_mm === 'number' ? r.hs_mm : null)}
-                  truthOf={run => run.h_mm} />
+                  truthOf={run => run.h_mm}
+                  calValueOf={calHsOf} calLabel="calibrated H" />
       <div style={{ height: 1, background: 'var(--hair-1)', margin: '16px 0' }} />
       <ChartPanel label="Peak period (Tp)" unit="s"
                   tip="The dominant wave period the board locks onto, in seconds. It reads 0 (a gap) whenever the spectral peak is below the prominence gate — no confident period to report."
