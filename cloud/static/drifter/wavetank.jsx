@@ -443,17 +443,10 @@ function StatusHealth({ reading, connected, lastTs, now }) {
 // ─────────────────────────────────────────────────────────────
 // RUN PANEL — bracket a bench session at a commanded height/period
 // ─────────────────────────────────────────────────────────────
-// Resolutions the board's cam_mode_from_name() accepts, case-sensitive; anything else falls back to a
-// default mode on the board, so only ever send one of these five.
-const WT_CAP_RES = ['QVGA', 'VGA', 'HD', 'FHD', '5MP'];
-
-function RunPanel({ drifter, runs, acks, onChanged }) {
+function RunPanel({ drifter, runs, onChanged }) {
   const [hMm, setHMm] = useState('120');
   const [tSec, setTSec] = useState('1.5');
   const [busy, setBusy] = useState(false);
-  const [capRes, setCapRes] = useState('5MP');
-  const [capCmd, setCapCmd] = useState(null);   // cmd string of the in-flight capture, for ack matching
-  const lastCapAckAt = useRef(0);
   const active = runs.find(r => r.stopped_ts == null);
 
   const start = async () => {
@@ -470,23 +463,6 @@ function RunPanel({ drifter, runs, acks, onChanged }) {
     await API.stopWaveRun(drifter);
     await onChanged();
     setBusy(false);
-  };
-
-  // clear the pending capture badge once its ack lands (same reply-matching pattern ParamPanel uses for
-  // set-param acks; only the newest ack is ever inspected since each arrives exactly once).
-  useEffect(() => {
-    const last = acks[acks.length - 1];
-    if (!last || last.at === lastCapAckAt.current) return;
-    lastCapAckAt.current = last.at;
-    if (capCmd && ackMatches(last, 'capture', capCmd)) setCapCmd(null);
-  }, [acks, capCmd]);
-
-  // One-off still capture from the bench board's camera at the chosen resolution. The photo itself doesn't
-  // render here — it shows up on the existing Camera tab once the board uploads it.
-  const capture = async () => {
-    const cmd = `capture ${capRes}`;
-    setCapCmd(cmd);
-    await API.sendWaveCommand(drifter, cmd);
   };
 
   return (
@@ -518,16 +494,6 @@ function RunPanel({ drifter, runs, acks, onChanged }) {
         Start commands the maker (<span className="mono">start-run H T</span>) and brackets this session so
         the charts can overlay the board's estimate against what you commanded.
       </p>
-      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', marginTop: 16, borderTop: '1px solid var(--hair-1)', paddingTop: 16, flexWrap: 'wrap' }}>
-        <label className="wt-field">
-          <span>Capture res <WtInfo tip="Resolution for a one-off still from the bench board's camera. The photo appears on the Camera tab once it uploads — not here." /></span>
-          <select className="cam-res mono" value={capRes} onChange={e => setCapRes(e.target.value)}>
-            {WT_CAP_RES.map(r => <option key={r} value={r}>{r}</option>)}
-          </select>
-        </label>
-        <button className="btn btn--sm" onClick={capture}>Capture</button>
-        {capCmd && <span className="pill neutral"><span className="dot" style={{ animation: 'pulseDot 1.2s infinite' }} />pending</span>}
-      </div>
     </div>
   );
 }
@@ -683,7 +649,7 @@ function WaveTankTab({ drifter }) {
       <HeaveStrip samples={heave} />
       <HsTpChart readings={readings} runs={runs} now={now} />
       <div className="grid-2" style={{ gridTemplateColumns: '0.9fr 1.1fr' }}>
-        <RunPanel drifter={drifter} runs={runs} acks={acks} onChanged={refreshRuns} />
+        <RunPanel drifter={drifter} runs={runs} onChanged={refreshRuns} />
         <ParamPanel drifter={drifter} reading={latest} acks={acks} />
       </div>
     </section>
