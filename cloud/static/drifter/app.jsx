@@ -131,7 +131,11 @@ function App() {
   const [liveFeatures, setLiveFeatures] = useState(null);
   const [saturated, setSaturated] = useState(false);
   const [battery, setBattery] = useState(null);       // {pct, mv} from the latest detection (null until reported)
-  const [tab, setTab] = useState('console');          // 'console' (the training zones) | 'camera'
+  // Default landing tab is the wave tank (tank-test season); override per-visit with ?tab=console|camera.
+  const [tab, setTab] = useState(() => {
+    const p = new URLSearchParams(location.search).get('tab');
+    return ['console', 'camera', 'wavetank'].indexOf(p) !== -1 ? p : 'wavetank';
+  });
   const [lastDataWall, setLastDataWall] = useState(null);   // server receipt time (s) of the freshest reading
   const [nowMs, setNowMs] = useState(Date.now());           // ticks every 1s so "last data Xs ago" counts up
   const [showFeatures, setShowFeatures] = useState(false);   // hidden by default -- a cleaner console on
