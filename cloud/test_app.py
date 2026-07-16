@@ -436,13 +436,16 @@ def test_wave_ws_command_pends_then_flushes_on_board_connect():
         assert flushed == {"type": "cmd", "cmd": "ping"}
 
 
-def test_wave_run_start_stop_writes_rows_and_sends_commands():
+def test_wave_run_start_stop_writes_rows_without_board_commands():
+    # Runs are SERVER-SIDE annotations only (operator call, 2026-07-16): forwarding start-run to the
+    # board reset its FFT window and blanked Hs at every bracket. Rows must be written, and NOTHING
+    # sent to the board — proven by sending a real command afterward and asserting it is the FIRST
+    # frame the board socket receives.
     d = "waverun"
     with client.websocket_connect(f"/ws/board?drifter={d}", headers=H) as board_ws:
         r = client.post("/api/wave-run", json={"drifter": d, "h_mm": 150, "t_ds": 60, "note": "bench"}, headers=H)
         assert r.status_code == 200, r.text
         rid = r.json()["id"]
-        assert board_ws.receive_json() == {"type": "cmd", "cmd": "start-run 150 60"}
 
         runs = client.get(f"/api/wave-runs?drifter={d}", headers=H).json()
         assert len(runs) == 1
@@ -450,7 +453,11 @@ def test_wave_run_start_stop_writes_rows_and_sends_commands():
 
         r2 = client.post("/api/wave-run/stop", json={"drifter": d}, headers=H)
         assert r2.status_code == 200 and r2.json()["stopped"] is True
-        assert board_ws.receive_json() == {"type": "cmd", "cmd": "stop-run"}
 
         runs2 = client.get(f"/api/wave-runs?drifter={d}", headers=H).json()
         assert runs2[0]["stopped_ts"] is not None
+
+        # Neither start nor stop reached the board: the next frame on the socket is the probe we
+        # send now, not a run command.
+        client.post("/api/wave-command", json={"drifter": d, "cmd": "ping"}, headers=H)
+        assert board_ws.receive_json() == {"type": "cmd", "cmd": "ping"}

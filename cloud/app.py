@@ -182,7 +182,12 @@ async def api_wave_run_start(req: Request, authorization: str = Header(None)):
     b = await req.json()
     drifter, h_mm, t_ds = b["drifter"], int(b["h_mm"]), int(b["t_ds"])
     rid = store.start_wave_run(drifter, h_mm, t_ds, b.get("note", ""))
-    await hub.send_cmd(drifter, f"start-run {h_mm} {t_ds}")
+    # Deliberately NOT forwarded to the board (operator call, 2026-07-16 tank session): the board's
+    # start-run handler resets its FFT window, blanking Hs for a full refill at every bracket. A run
+    # is a server-side annotation — scoring/overlays key on this row's timestamps — so the board can
+    # keep estimating continuously and transitions get filtered in data processing instead. (Cost:
+    # frames' run_id and the SD run-log no longer track cloud brackets; both already diverged and
+    # neither is load-bearing for the cloud workflow.)
     return {"ok": True, "id": rid}
 
 
@@ -192,7 +197,7 @@ async def api_wave_run_stop(req: Request, authorization: str = Header(None)):
     b = await req.json()
     drifter = b["drifter"]
     stopped = store.stop_wave_run(drifter)
-    await hub.send_cmd(drifter, "stop-run")
+    # Not forwarded to the board — see api_wave_run_start.
     return {"ok": True, "stopped": stopped}
 
 
