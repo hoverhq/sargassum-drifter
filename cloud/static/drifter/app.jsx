@@ -310,6 +310,9 @@ function App() {
             <button key={id} className={`btn btn--sm ${tab === id ? 'btn--primary' : 'btn--ghost'}`}
                     onClick={() => setTab(id)}>{label}</button>
           ))}
+          {/* Wave-tank calibration lab report (served from the rig's static mount) */}
+          <a className="btn btn--sm btn--ghost" href="/static/reports/wavetank-calibration-2026-07-16.pdf"
+             target="_blank" rel="noopener">Lab report</a>
         </nav>
       </header>
 
