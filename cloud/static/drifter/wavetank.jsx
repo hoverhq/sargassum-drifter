@@ -494,6 +494,13 @@ function RunPanel({ drifter, runs, onChanged }) {
         Start commands the maker (<span className="mono">start-run H T</span>) and brackets this session so
         the charts can overlay the board's estimate against what you commanded.
       </p>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 16, borderTop: '1px solid var(--hair-1)', paddingTop: 16, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 'var(--text-md)', color: 'var(--t-2)' }}>
+          Board screen <WtInfo tip="Turn this board's OLED panel on or off over WiFi. The setting persists across reboots — a board set off comes back up dark." />
+        </span>
+        <button className="btn btn--sm" onClick={() => API.sendWaveCommand(drifter, 'oled on')}>On</button>
+        <button className="btn btn--sm" onClick={() => API.sendWaveCommand(drifter, 'oled off')}>Off</button>
+      </div>
     </div>
   );
 }
