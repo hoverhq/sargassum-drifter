@@ -117,6 +117,16 @@ function useWaveSocket(drifter) {
     };
   }, [drifter, appendReading]);
 
+  // Poll the run list so runs started/stopped OUTSIDE this page (the wave-command API, another
+  // browser tab) show up without a reload — the live WS carries readings/acks but has no
+  // run-change event, so without this the badge + ground-truth overlay go stale-until-reload.
+  useEffect(() => {
+    const t = setInterval(() => {
+      API.getWaveRuns(drifter).then(setRuns).catch(() => { /* transient; next tick retries */ });
+    }, 8000);
+    return () => clearInterval(t);
+  }, [drifter]);
+
   // refetch runs after a start/stop so the badge + chart overlay reflect it immediately (the server owns
   // run rows; the board only echoes the start-run command).
   const refreshRuns = useCallback(async () => {
